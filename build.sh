@@ -1,4 +1,5 @@
 #!/bin/bash
+# test workflow
 set -e
 
 # Colors for output
