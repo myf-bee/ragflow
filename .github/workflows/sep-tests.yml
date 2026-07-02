@@ -1,4 +1,4 @@
-name: myf-tests
+name: sep-tests
 permissions:
   contents: read
 
@@ -17,6 +17,9 @@ on:
   # — pull_request workflows use the workflow files from the pull request branch, and secrets are unavailable.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
+    branches:
+    - 'main'
+    - 'ragflow-main-test'
     paths-ignore:
       - 'docs/**'
       - '*.md'
