@@ -1,4 +1,4 @@
-//test
+//test 2
 import type { Config } from 'jest';
 
 const config: Config = {
