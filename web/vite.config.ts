@@ -6,7 +6,7 @@ import { createHtmlPlugin } from 'vite-plugin-html';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import { appName } from './src/conf.json';
 
-// Inject code location data attributes for react-dev-inspector test web ci
+// Inject code location data attributes for react-dev-inspector test web ci 2
 const inspectorBabelPlugin = (): import('vite').Plugin => ({
   name: 'inspector-babel',
   enforce: 'pre' as const,
