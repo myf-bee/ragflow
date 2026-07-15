@@ -1,4 +1,4 @@
-//test ci
+//test web ci 2
 const { fontFamily } = require('tailwindcss/defaultTheme');
 
 /** @type {import('tailwindcss').Config} */
