@@ -545,7 +545,7 @@ jobs:
             exit 1
           fi
           echo "Start to run test sdk on Infinity"
-          source .venv/bin/activate && set -o pipefail; DOC_ENGINE=infinity pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} --junitxml=pytest-infinity-sdk.xml --cov=sdk/python/ragflow_sdk --cov-branch --cov-report=xml:coverage-infinity-sdk.xml test/testcases/test_sdk_api 2>&1 | tee infinity_sdk_test.log
+          source .venv/bin/activate && set -o pipefail; DOC_ENGINE=infinity pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} --durations=400 --junitxml=pytest-infinity-sdk.xml --cov=sdk/python/ragflow_sdk --cov-branch --cov-report=xml:coverage-infinity-sdk.xml test/testcases/test_sdk_api 2>&1 | tee infinity_sdk_test.log
 
       - name: Run New RESTFUL api tests against Infinity
         if: env.API_PROXY_SCHEME != 'web'
@@ -565,7 +565,7 @@ jobs:
             sudo docker logs ${RAGFLOW_CONTAINER}
             exit 1
           fi
-          source .venv/bin/activate && set -o pipefail; DOC_ENGINE=infinity pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} test/testcases/restful_api 2>&1 | tee infinity_restful_api_test.log
+          source .venv/bin/activate && set -o pipefail; DOC_ENGINE=infinity pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} --durations=400 test/testcases/restful_api 2>&1 | tee infinity_restful_api_test.log
 
       - name: RAGFlow CLI retrieval test Infinity
         if: env.API_PROXY_SCHEME == 'python'
@@ -1055,7 +1055,7 @@ jobs:
             exit 1
           fi
           echo "Start to run test sdk on Elasticsearch"
-          source .venv/bin/activate && set -o pipefail; pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} --junitxml=pytest-es-sdk.xml --cov=sdk/python/ragflow_sdk --cov-branch --cov-report=xml:coverage-es-sdk.xml test/testcases/test_sdk_api 2>&1 | tee es_sdk_test.log
+          source .venv/bin/activate && set -o pipefail; pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} --durations=500 --junitxml=pytest-es-sdk.xml --cov=sdk/python/ragflow_sdk --cov-branch --cov-report=xml:coverage-es-sdk.xml test/testcases/test_sdk_api 2>&1 | tee es_sdk_test.log
 
       - name: Run New RESTFUL api tests against Elasticsearch
         if: env.API_PROXY_SCHEME != 'web'
@@ -1075,7 +1075,7 @@ jobs:
             sudo docker logs ${RAGFLOW_CONTAINER}
             exit 1
           fi
-          source .venv/bin/activate && set -o pipefail; pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} test/testcases/restful_api 2>&1 | tee es_restful_api_test.log
+          source .venv/bin/activate && set -o pipefail; pytest -s --tb=short --level=${HTTP_API_TEST_LEVEL} --durations=400 test/testcases/restful_api 2>&1 | tee es_restful_api_test.log
 
       - name: RAGFlow CLI retrieval test Elasticsearch
         if: env.API_PROXY_SCHEME == 'python'
