@@ -400,7 +400,9 @@ jobs:
                  before=$(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}' | wc -l)
                  for net in $(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}'); do
                    ts=$(sudo docker network inspect --format '{{ index .Labels "ragflow-ci-created" }}' "${net}" 2>/dev/null || true)
-                   if [[ "${ts}" =~ ^[0-9]+$ ]] && (( now - ts > stale_after )); then
+                   # Remove if timestamp is non-numeric (legacy network from a previous code
+                   # version) or if it is numeric and older than stale_after.
+                   if [[ ! "${ts}" =~ ^[0-9]+$ ]] || (( now - ts > stale_after )); then
                      sudo docker network rm "${net}" >/dev/null 2>&1 || true
                    fi
                  done
@@ -409,7 +411,7 @@ jobs:
                }
 
                reserve_port_offset() {
-                 local attempt candidate base port guard g ok reject_reason
+                 local attempt candidate base port guard g ok reject_reason create_err
                  local -a guards
                  local used guarded need_refresh used_n guarded_n debug_count create_fail_streak
                  cleanup_stale_port_locks
@@ -421,6 +423,7 @@ jobs:
                    return 1
                  fi
                  echo "  Running containers on shared daemon: $(sudo docker ps -q 2>/dev/null | wc -l)" >&2
+                 echo "  Docker networks on shared daemon: $(sudo docker network ls -q 2>/dev/null | wc -l)" >&2
                  need_refresh=1
                  debug_count=0
                  create_fail_streak=0
@@ -429,12 +432,13 @@ jobs:
                    # Refresh snapshots on first attempt and after a failed reservation.
                    if [[ ${need_refresh} -eq 1 ]]; then
                      used=$(sudo docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE '[0-9]+->' | tr -d '>-' | sort -u || true)
-                     guarded=$(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}' 2>/dev/null | sed 's/^ragflow-ci-port-//' | sort -u || true)
+                     # Strip both ragflow-ci-port- (current) and ragflow-ci-portguard- (legacy) prefixes.
+                     guarded=$(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}' 2>/dev/null | sed 's/^ragflow-ci-port\(guard\)\?-//' | sort -u || true)
                      used_n=$(echo "${used}" | grep -c . 2>/dev/null || true)
                      guarded_n=$(echo "${guarded}" | grep -c . 2>/dev/null || true)
                      echo "  Snapshot: ${used_n} bound ports, ${guarded_n} guarded ports" >&2
-                     [[ ${used_n} -gt 0 ]] && echo "  Bound sample: $(echo "${used}" | head -10 | tr '\n' ' ')" >&2
-                     [[ ${guarded_n} -gt 0 ]] && echo "  Guarded sample: $(echo "${guarded}" | head -10 | tr '\n' ' ')" >&2
+                     [[ ${used_n} -gt 0 ]] && echo "  Bound sample: $(echo "${used}" | tr '\n' ' ' | cut -d' ' -f1-10)" >&2
+                     [[ ${guarded_n} -gt 0 ]] && echo "  Guarded sample: $(echo "${guarded}" | tr '\n' ' ' | cut -d' ' -f1-10)" >&2
                      need_refresh=0
                    fi
                    # Fast path: skip if any (base+candidate) port is already bound or guarded.
@@ -465,7 +469,8 @@ jobs:
                    for base in "${PORT_BASES[@]}"; do
                      port=$((base + candidate))
                      guard="ragflow-ci-port-${port}"
-                     if ! sudo docker network create --label ragflow-ci-created="$(date -u +%s)" "${guard}" >/dev/null 2>&1; then
+                     if ! create_err=$(sudo docker network create --label ragflow-ci-created="$(date -u +%s)" "${guard}" 2>&1 >/dev/null); then
+                       echo "  docker network create ${guard} failed: ${create_err}" >&2
                        ok=0; break
                      fi
                      guards+=("${guard}")
@@ -963,7 +968,9 @@ jobs:
                  before=$(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}' | wc -l)
                  for net in $(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}'); do
                    ts=$(sudo docker network inspect --format '{{ index .Labels "ragflow-ci-created" }}' "${net}" 2>/dev/null || true)
-                   if [[ "${ts}" =~ ^[0-9]+$ ]] && (( now - ts > stale_after )); then
+                   # Remove if timestamp is non-numeric (legacy network from a previous code
+                   # version) or if it is numeric and older than stale_after.
+                   if [[ ! "${ts}" =~ ^[0-9]+$ ]] || (( now - ts > stale_after )); then
                      sudo docker network rm "${net}" >/dev/null 2>&1 || true
                    fi
                  done
@@ -972,7 +979,7 @@ jobs:
                }
 
                reserve_port_offset() {
-                 local attempt candidate base port guard g ok reject_reason
+                 local attempt candidate base port guard g ok reject_reason create_err
                  local -a guards
                  local used guarded need_refresh used_n guarded_n debug_count create_fail_streak
                  cleanup_stale_port_locks
@@ -984,6 +991,7 @@ jobs:
                    return 1
                  fi
                  echo "  Running containers on shared daemon: $(sudo docker ps -q 2>/dev/null | wc -l)" >&2
+                 echo "  Docker networks on shared daemon: $(sudo docker network ls -q 2>/dev/null | wc -l)" >&2
                  need_refresh=1
                  debug_count=0
                  create_fail_streak=0
@@ -992,12 +1000,13 @@ jobs:
                    # Refresh snapshots on first attempt and after a failed reservation.
                    if [[ ${need_refresh} -eq 1 ]]; then
                      used=$(sudo docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE '[0-9]+->' | tr -d '>-' | sort -u || true)
-                     guarded=$(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}' 2>/dev/null | sed 's/^ragflow-ci-port-//' | sort -u || true)
+                     # Strip both ragflow-ci-port- (current) and ragflow-ci-portguard- (legacy) prefixes.
+                     guarded=$(sudo docker network ls --filter "label=ragflow-ci-created" --format '{{.Name}}' 2>/dev/null | sed 's/^ragflow-ci-port\(guard\)\?-//' | sort -u || true)
                      used_n=$(echo "${used}" | grep -c . 2>/dev/null || true)
                      guarded_n=$(echo "${guarded}" | grep -c . 2>/dev/null || true)
                      echo "  Snapshot: ${used_n} bound ports, ${guarded_n} guarded ports" >&2
-                     [[ ${used_n} -gt 0 ]] && echo "  Bound sample: $(echo "${used}" | head -10 | tr '\n' ' ')" >&2
-                     [[ ${guarded_n} -gt 0 ]] && echo "  Guarded sample: $(echo "${guarded}" | head -10 | tr '\n' ' ')" >&2
+                     [[ ${used_n} -gt 0 ]] && echo "  Bound sample: $(echo "${used}" | tr '\n' ' ' | cut -d' ' -f1-10)" >&2
+                     [[ ${guarded_n} -gt 0 ]] && echo "  Guarded sample: $(echo "${guarded}" | tr '\n' ' ' | cut -d' ' -f1-10)" >&2
                      need_refresh=0
                    fi
                    # Fast path: skip if any (base+candidate) port is already bound or guarded.
@@ -1028,7 +1037,8 @@ jobs:
                    for base in "${PORT_BASES[@]}"; do
                      port=$((base + candidate))
                      guard="ragflow-ci-port-${port}"
-                     if ! sudo docker network create --label ragflow-ci-created="$(date -u +%s)" "${guard}" >/dev/null 2>&1; then
+                     if ! create_err=$(sudo docker network create --label ragflow-ci-created="$(date -u +%s)" "${guard}" 2>&1 >/dev/null); then
+                       echo "  docker network create ${guard} failed: ${create_err}" >&2
                        ok=0; break
                      fi
                      guards+=("${guard}")
