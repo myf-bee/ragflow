@@ -411,13 +411,13 @@ jobs:
                }
 
                reserve_port_offset() {
-                 local attempt candidate base port guard g ok reject_reason create_err
+                 local attempt candidate base port guard g ok reject_reason create_err guard_subnet
                  local -a guards
                  local used guarded need_refresh used_n guarded_n debug_count create_fail_streak
                  cleanup_stale_port_locks
                  echo "Reserving host ports for ${DOC_ENGINE} compose stack..." >&2
                  # Fail fast if the shared docker daemon is not reachable — avoids a
-                 # 6000-iteration spin where every docker network create silently fails.
+                 # long spin where every docker network create silently fails.
                  if ! sudo docker info >/dev/null 2>&1; then
                    echo "  ERROR: 'sudo docker info' failed — docker daemon is not reachable from this runner" >&2
                    return 1
@@ -427,7 +427,7 @@ jobs:
                  need_refresh=1
                  debug_count=0
                  create_fail_streak=0
-                 for attempt in $(seq 0 5999); do
+                 for attempt in $(seq 0 499); do
                    candidate=$(( PARTITION_BASE + ((GITHUB_RUN_ID + RUNNER_NUM * 1000 + attempt * 97) % PARTITION_SIZE) ))
                    # Refresh snapshots on first attempt and after a failed reservation.
                    if [[ ${need_refresh} -eq 1 ]]; then
@@ -469,7 +469,12 @@ jobs:
                    for base in "${PORT_BASES[@]}"; do
                      port=$((base + candidate))
                      guard="ragflow-ci-port-${port}"
-                     if ! create_err=$(sudo docker network create --label ragflow-ci-created="$(date -u +%s)" "${guard}" 2>&1 >/dev/null); then
+                     # Use an explicit subnet from 10.0.0.0/8 (outside Docker's
+                     # default 172.17-31.x.x pools) to bypass "all predefined
+                     # address pools have been fully subnetted" errors on shared
+                     # daemons where auto-allocation is exhausted.
+                     guard_subnet="10.$((port / 256)).$((port % 256)).0/24"
+                     if ! create_err=$(sudo docker network create --subnet "${guard_subnet}" --label ragflow-ci-created="$(date -u +%s)" "${guard}" 2>&1 >/dev/null); then
                        echo "  docker network create ${guard} failed: ${create_err}" >&2
                        ok=0; break
                      fi
@@ -979,13 +984,13 @@ jobs:
                }
 
                reserve_port_offset() {
-                 local attempt candidate base port guard g ok reject_reason create_err
+                 local attempt candidate base port guard g ok reject_reason create_err guard_subnet
                  local -a guards
                  local used guarded need_refresh used_n guarded_n debug_count create_fail_streak
                  cleanup_stale_port_locks
                  echo "Reserving host ports for ${DOC_ENGINE} compose stack..." >&2
                  # Fail fast if the shared docker daemon is not reachable — avoids a
-                 # 6000-iteration spin where every docker network create silently fails.
+                 # long spin where every docker network create silently fails.
                  if ! sudo docker info >/dev/null 2>&1; then
                    echo "  ERROR: 'sudo docker info' failed — docker daemon is not reachable from this runner" >&2
                    return 1
@@ -995,7 +1000,7 @@ jobs:
                  need_refresh=1
                  debug_count=0
                  create_fail_streak=0
-                 for attempt in $(seq 0 5999); do
+                 for attempt in $(seq 0 499); do
                    candidate=$(( PARTITION_BASE + ((GITHUB_RUN_ID + RUNNER_NUM * 1000 + attempt * 97) % PARTITION_SIZE) ))
                    # Refresh snapshots on first attempt and after a failed reservation.
                    if [[ ${need_refresh} -eq 1 ]]; then
@@ -1037,7 +1042,12 @@ jobs:
                    for base in "${PORT_BASES[@]}"; do
                      port=$((base + candidate))
                      guard="ragflow-ci-port-${port}"
-                     if ! create_err=$(sudo docker network create --label ragflow-ci-created="$(date -u +%s)" "${guard}" 2>&1 >/dev/null); then
+                     # Use an explicit subnet from 10.0.0.0/8 (outside Docker's
+                     # default 172.17-31.x.x pools) to bypass "all predefined
+                     # address pools have been fully subnetted" errors on shared
+                     # daemons where auto-allocation is exhausted.
+                     guard_subnet="10.$((port / 256)).$((port % 256)).0/24"
+                     if ! create_err=$(sudo docker network create --subnet "${guard_subnet}" --label ragflow-ci-created="$(date -u +%s)" "${guard}" 2>&1 >/dev/null); then
                        echo "  docker network create ${guard} failed: ${create_err}" >&2
                        ok=0; break
                      fi
