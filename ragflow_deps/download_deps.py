@@ -28,7 +28,7 @@
 #
 # The main `Dockerfile` (built from the project root) pulls this image
 # via `--mount=type=bind,from=infiniflow/ragflow_deps:latest,...` and
-# is unaffected by where these files live locally.  test ci
+# is unaffected by where these files live locally.  test ci 10
 
 import argparse
 import os
