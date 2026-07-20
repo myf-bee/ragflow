@@ -188,7 +188,14 @@ jobs:
             while IFS= read -r file; do
               case "$file" in
                 # Docker, test, SDK, and workflow changes can alter either server path.
-                Dockerfile|docker/**|.github/workflows/**|test/**|sdk/**)
+                Dockerfile|docker/**|.github/workflows/**|sdk/**)
+                  has_go=true
+                  has_python=true
+                  ;;
+                test/unit_test/**)
+                  has_python=true
+                  ;;
+                test/**)
                   has_go=true
                   has_python=true
                   ;;
