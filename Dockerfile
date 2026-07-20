@@ -186,8 +186,9 @@ WORKDIR /ragflow
 # Install build-only dependencies for compiling Python C extensions.
 # These are not inherited from base to keep the production image smaller.
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
-    sudo apt install -y build-essential libpython3-dev libicu-dev libgbm-dev && \
-    sudo rm -rf /var/lib/apt/lists/*
+    apt-get update --fix-missing && \
+    apt-get install -y build-essential libpython3-dev libicu-dev libgbm-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 # install dependencies from uv.lock file
 COPY pyproject.toml uv.lock ./
