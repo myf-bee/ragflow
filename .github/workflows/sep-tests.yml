@@ -134,19 +134,24 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "pull_request_target" ]]; then
             changed_files=$(mktemp)
             trap 'rm -f "$changed_files"' EXIT
-            git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} \
-              | while read -r file; do
+            git diff --name-only -z ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} \
+              | while IFS= read -r -d '' file; do
                   if [[ -f "$file" ]]; then
                     printf '%s\0' "$file"
                   fi
                 done > "$changed_files"
             echo "Changed files to run lefthook on:"
             if [[ -s "$changed_files" ]]; then
-              tr '\0' '\n' < "$changed_files" | sed 's/^/  /'
+              while IFS= read -r -d '' file; do
+                printf '  %q\n' "$file"
+              done < "$changed_files"
             else
               echo "  (none — lefthook will be a no-op)"
             fi
-            lefthook run pre-commit --files-from-stdin --no-auto-install < "$changed_files"
+            # LEFTHOOK_CHECK_ONLY=1 makes the pre-commit jobs verify without
+            # applying --fix or `git add`, so CI only checks and reports
+            # failures instead of rewriting the working tree.
+            LEFTHOOK_CHECK_ONLY=1 lefthook run pre-commit --files-from-stdin --no-auto-install < "$changed_files"
           fi
 
       - name: Set test level
@@ -331,17 +336,22 @@ jobs:
           fi
 
       - name: Build ragflow:nightly
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
           RUNNER_WORKSPACE_PREFIX=${RUNNER_WORKSPACE_PREFIX:-${HOME}}
           BUILD_LOCK_FILE=${RUNNER_WORKSPACE_PREFIX}/artifacts/${GITHUB_REPOSITORY}/docker-build.lock
           mkdir -p "$(dirname "${BUILD_LOCK_FILE}")"
+          _gitee_secret=$(mktemp)
+          printf '%s' "${GITEE_TOKEN}" > "${_gitee_secret}"
           (
             flock -w 10800 9 || { echo "Timed out waiting for the shared Docker build slot" >&2; exit 1; }
             echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME}"
             ##sudo docker pull ubuntu:24.04
-            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} -f Dockerfile -t ${RAGFLOW_IMAGE} .
+            sudo DOCKER_BUILDKIT=1 docker build --secret id=gitee_token,src="${_gitee_secret}" --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} -f Dockerfile -t ${RAGFLOW_IMAGE} .
           ) 9>"${BUILD_LOCK_FILE}"
+          rm -f "${_gitee_secret}"
 
       - name: Prepare Python test environment
         if: env.API_PROXY_SCHEME != 'web'
@@ -904,17 +914,22 @@ jobs:
           fi
 
       - name: Build ragflow:nightly
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
           RUNNER_WORKSPACE_PREFIX=${RUNNER_WORKSPACE_PREFIX:-${HOME}}
           BUILD_LOCK_FILE=${RUNNER_WORKSPACE_PREFIX}/artifacts/${GITHUB_REPOSITORY}/docker-build.lock
           mkdir -p "$(dirname "${BUILD_LOCK_FILE}")"
+          _gitee_secret=$(mktemp)
+          printf '%s' "${GITEE_TOKEN}" > "${_gitee_secret}"
           (
             flock -w 10800 9 || { echo "Timed out waiting for the shared Docker build slot" >&2; exit 1; }
             echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME}"
             ##sudo docker pull ubuntu:24.04
-            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} -f Dockerfile -t ${RAGFLOW_IMAGE} .
+            sudo DOCKER_BUILDKIT=1 docker build --secret id=gitee_token,src="${_gitee_secret}" --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} -f Dockerfile -t ${RAGFLOW_IMAGE} .
           ) 9>"${BUILD_LOCK_FILE}"
+          rm -f "${_gitee_secret}"
 
       - name: Prepare Python test environment
         if: env.API_PROXY_SCHEME != 'web'

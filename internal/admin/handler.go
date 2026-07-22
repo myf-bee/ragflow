@@ -25,7 +25,7 @@ import (
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
 	"ragflow/internal/engine/redis"
-	"ragflow/internal/httputil"
+	"ragflow/internal/handler"
 	"ragflow/internal/server"
 	"ragflow/internal/service"
 	"ragflow/internal/storage"
@@ -191,14 +191,21 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
-	quotaInt, err := common.ParseRequestIntPositive(c, c.Query("quota"), "quota", 0)
-	if err != nil {
-		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
-		return
-	}
-	if quotaInt > 100 {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Quota must be less than or equal to 100")
-		return
+	// quota is optional: nil when the query param is absent, &v when present
+	// (including 0). This lets ListUsersEE distinguish "no quota filter" from
+	// "filter by quota threshold 0".
+	var quotaPtr *int
+	if quotaStr := c.Query("quota"); quotaStr != "" {
+		q, err := common.ParseRequestIntPositive(c, quotaStr, "quota", 0)
+		if err != nil {
+			common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
+			return
+		}
+		if q > 100 {
+			common.ErrorWithCode(c, common.CodeBadRequest, "Quota must be less than or equal to 100")
+			return
+		}
+		quotaPtr = &q
 	}
 	daysInt, err := common.ParseRequestIntPositive(c, c.Query("days"), "days", 0)
 	if err != nil {
@@ -219,11 +226,13 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		common.SuccessWithData(c, users, "List users")
 		return
 	case common.EnterpriseEdition:
-		users, err = h.service.ListUsersEE(pageInt, pageSizeInt, name, status, role, sort, orderBy, plan, topInt, daysInt, quotaInt)
+		users, err = h.service.ListUsersEE(pageInt, pageSizeInt, name, status, role, sort, orderBy, plan, topInt, daysInt, quotaPtr)
 		if err != nil {
 			common.ErrorWithCode(c, common.CodeServerError, err.Error())
 			return
 		}
+		common.SuccessWithData(c, users, "List users")
+		return
 	default:
 		common.ErrorWithCode(c, common.CodeBadRequest, "Invalid RAGFlow type")
 		return
@@ -703,38 +712,6 @@ func (h *Handler) GetVersion(c *gin.Context) {
 	common.SuccessWithData(c, gin.H{"version": version, "version_type": versionType}, "")
 }
 
-// GetFingerprint handle get system fingerprint
-func (h *Handler) GetFingerprint(c *gin.Context) {
-	common.ResponseWithHttpCodeData(c, http.StatusNotImplemented, common.CodeBadRequest, nil, "method not implemented")
-	return
-}
-
-type SetLicenseHTTPRequest struct {
-	License string `json:"license" binding:"required"`
-}
-
-// SetLicense to set system license
-func (h *Handler) SetLicense(c *gin.Context) {
-	common.ResponseWithHttpCodeData(c, http.StatusNotImplemented, common.CodeBadRequest, nil, "method not implemented")
-	return
-}
-
-type SetLicenseConfigHTTPRequest struct {
-	TimeRecordSaveInterval int64 `json:"value1" binding:"required"`
-	TimeRecordTaskDuration int64 `json:"value2" binding:"required"`
-}
-
-func (h *Handler) UpdateLicenseConfig(c *gin.Context) {
-	common.ResponseWithHttpCodeData(c, http.StatusNotImplemented, common.CodeBadRequest, nil, "method not implemented")
-	return
-}
-
-// ShowLicense to get system license
-func (h *Handler) ShowLicense(c *gin.Context) {
-	common.ResponseWithHttpCodeData(c, http.StatusNotImplemented, common.CodeBadRequest, nil, "method not implemented")
-	return
-}
-
 // ListSandboxProviders handle list sandbox providers
 func (h *Handler) ListSandboxProviders(c *gin.Context) {
 	providers, err := h.service.ListSandboxProviders()
@@ -1039,7 +1016,7 @@ func (h *Handler) RemoveIngestionTasks(c *gin.Context) {
 	if req.Email == nil && req.Status == nil {
 		tasks, err := h.service.RemoveIngestionTasks(req.Tasks)
 		if err != nil {
-			common.ErrorWithCode(c, httputil.IngestionTaskErrorCode(err), err.Error())
+			common.ErrorWithCode(c, handler.IngestionTaskErrorCode(err), err.Error())
 			return
 		}
 
@@ -1047,7 +1024,7 @@ func (h *Handler) RemoveIngestionTasks(c *gin.Context) {
 	} else {
 		tasks, err := h.service.RemoveIngestionTasksByCondition(req.Tasks, req.Email, req.Status)
 		if err != nil {
-			common.ErrorWithCode(c, httputil.IngestionTaskErrorCode(err), err.Error())
+			common.ErrorWithCode(c, handler.IngestionTaskErrorCode(err), err.Error())
 			return
 		}
 		common.SuccessWithData(c, tasks, "Remove tasks successfully")
@@ -1070,7 +1047,7 @@ func (h *Handler) StopIngestionTasks(c *gin.Context) {
 	if req.Email == nil && req.Status == nil {
 		tasks, err := h.service.StopIngestionTasks(req.Tasks)
 		if err != nil {
-			common.ErrorWithCode(c, httputil.IngestionTaskErrorCode(err), err.Error())
+			common.ErrorWithCode(c, handler.IngestionTaskErrorCode(err), err.Error())
 			return
 		}
 		var result []map[string]string

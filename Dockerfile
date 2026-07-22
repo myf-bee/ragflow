@@ -50,16 +50,27 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     fonts-freefont-ttf fonts-noto-cjk postgresql-client
 
 # Download resource from GitHub to /usr/share/infinity
-RUN mkdir -p /usr/share/infinity/resource && \
+# Gitee requires a personal access token for cloning; the token is injected
+# via BuildKit secret mount (id=gitee_token) and never persisted in any layer.
+# When the secret is absent (e.g. NEED_MIRROR=0 builds using GitHub), the
+# clone falls back to anonymous access.
+RUN --mount=type=secret,id=gitee_token \
+    mkdir -p /usr/share/infinity/resource && \
     if [ "$NEED_MIRROR" == "1" ]; then \
-        git clone --depth 1 --single-branch https://gitee.com/infiniflow/resource /tmp/resource; \
+        GITEE_TOKEN=$(cat /run/secrets/gitee_token 2>/dev/null || echo ""); \
+        if [ -n "$GITEE_TOKEN" ]; then \
+            git -c http.extraHeader="PRIVATE-TOKEN: ${GITEE_TOKEN}" \
+                clone --depth 1 --single-branch https://gitee.com/infiniflow/resource /tmp/resource; \
+        else \
+            git clone --depth 1 --single-branch https://gitee.com/infiniflow/resource /tmp/resource; \
+        fi; \
     else \
         git clone --depth 1 --single-branch https://github.com/infiniflow/resource.git /tmp/resource; \
     fi && \
     cp -r /tmp/resource/* /usr/share/infinity/resource && \
     rm -rf /tmp/resource
 
-ARG NGINX_VERSION=1.31.2-1~noble
+ARG NGINX_VERSION=1.31.3-1~noble
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     mkdir -p /etc/apt/keyrings && \
     curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/keyrings/nginx-archive-keyring.gpg && \

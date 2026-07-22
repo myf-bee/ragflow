@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"ragflow/internal/common"
 	"strings"
 )
 
@@ -126,7 +127,7 @@ func ragconChatPayload(modelName string, messages []Message, stream bool, chatMo
 	return reqBody
 }
 
-func (r *RAGconModel) ChatWithMessages(modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig) (*ChatResponse, error) {
+func (r *RAGconModel) ChatWithMessages(modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, modelUsage *common.ModelUsage) (*ChatResponse, error) {
 	if err := r.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
@@ -216,13 +217,13 @@ func (r *RAGconModel) ChatWithMessages(modelName string, messages []Message, api
 		ToolCalls:     toolCalls,
 	}
 	if pt, ct, tt := extractUsageFromMap(result); tt > 0 {
-		chatResponse.Usage = &ChatUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}
+		chatResponse.Usage = &TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}
 	}
 
 	return chatResponse, nil
 }
 
-func (r *RAGconModel) ChatStreamlyWithSender(modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, sender func(*string, *string) error) error {
+func (r *RAGconModel) ChatStreamlyWithSender(modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
 	if err := r.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return err
 	}
@@ -269,7 +270,7 @@ func (r *RAGconModel) ChatStreamlyWithSender(modelName string, messages []Messag
 
 	sawTerminal := false
 	accumulatedToolCalls := make(map[int]map[string]interface{})
-	var streamUsage *ChatUsage
+	var streamUsage *TokenUsage
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -293,7 +294,7 @@ func (r *RAGconModel) ChatStreamlyWithSender(modelName string, messages []Messag
 		}
 
 		if pt, ct, tt := extractUsageFromMap(event); tt > 0 {
-			streamUsage = &ChatUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}
+			streamUsage = &TokenUsage{PromptTokens: pt, CompletionTokens: ct, TotalTokens: tt}
 		}
 
 		choices, ok := event["choices"].([]interface{})
@@ -309,35 +310,7 @@ func (r *RAGconModel) ChatStreamlyWithSender(modelName string, messages []Messag
 			continue
 		}
 
-		if tcs, ok := delta["tool_calls"].([]interface{}); ok {
-			for _, tc := range tcs {
-				tcMap, ok := tc.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				idxF, ok := tcMap["index"].(float64)
-				if !ok {
-					continue
-				}
-				idx := int(idxF)
-				if existing, hasExisting := accumulatedToolCalls[idx]; hasExisting {
-					if fn, ok := tcMap["function"].(map[string]interface{}); ok {
-						if args, ok := fn["arguments"].(string); ok {
-							if ef, ok := existing["function"].(map[string]interface{}); ok {
-								if ea, ok := ef["arguments"].(string); ok {
-									ef["arguments"] = ea + args
-								} else {
-									ef["arguments"] = args
-								}
-							}
-						}
-					}
-				} else {
-					accumulatedToolCalls[idx] = cloneMap(tcMap)
-				}
-			}
-			continue
-		}
+		accumulateToolCallDeltas(delta, accumulatedToolCalls)
 
 		if reasoningContent, ok := delta["reasoning_content"].(string); ok && reasoningContent != "" {
 			if err := sender(nil, &reasoningContent); err != nil {
@@ -360,13 +333,7 @@ func (r *RAGconModel) ChatStreamlyWithSender(modelName string, messages []Messag
 		return fmt.Errorf("ragcon: stream ended before [DONE] or finish_reason")
 	}
 
-	if len(accumulatedToolCalls) > 0 && chatModelConfig != nil {
-		tcs := make([]map[string]interface{}, 0, len(accumulatedToolCalls))
-		for _, tc := range accumulatedToolCalls {
-			tcs = append(tcs, tc)
-		}
-		chatModelConfig.ToolCallsResult = &tcs
-	}
+	setSortedToolCallsResult(chatModelConfig, accumulatedToolCalls)
 	if streamUsage != nil && chatModelConfig != nil {
 		chatModelConfig.UsageResult = streamUsage
 	}
@@ -382,7 +349,7 @@ type ragconEmbeddingResponse struct {
 	} `json:"data"`
 }
 
-func (r *RAGconModel) Embed(modelName *string, texts []string, apiConfig *APIConfig, embeddingConfig *EmbeddingConfig) ([]EmbeddingData, error) {
+func (r *RAGconModel) Embed(modelName *string, texts []string, apiConfig *APIConfig, embeddingConfig *EmbeddingConfig, modelUsage *common.ModelUsage) ([]EmbeddingData, error) {
 	if err := r.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
@@ -450,7 +417,7 @@ func (r *RAGconModel) Embed(modelName *string, texts []string, apiConfig *APICon
 }
 
 // Rerank POSTs to RAGcon's /rerank endpoint (LiteLLM proxy passthrough).
-func (r *RAGconModel) Rerank(modelName *string, query string, documents []string, apiConfig *APIConfig, rerankConfig *RerankConfig) (*RerankResponse, error) {
+func (r *RAGconModel) Rerank(modelName *string, query string, documents []string, apiConfig *APIConfig, rerankConfig *RerankConfig, modelUsage *common.ModelUsage) (*RerankResponse, error) {
 	if err := r.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
@@ -656,7 +623,7 @@ func (r *RAGconModel) newASRRequest(ctx context.Context, modelName *string, file
 	return req, responseFormat, nil
 }
 
-func (r *RAGconModel) TranscribeAudio(modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig) (*ASRResponse, error) {
+func (r *RAGconModel) TranscribeAudio(modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, modelUsage *common.ModelUsage) (*ASRResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), nonStreamCallTimeout)
 	defer cancel()
 
@@ -683,7 +650,7 @@ func (r *RAGconModel) TranscribeAudio(modelName *string, file *string, apiConfig
 	return decodeOpenAIASRResponse(respBody, responseFormat)
 }
 
-func (r *RAGconModel) TranscribeAudioWithSender(modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, sender func(*string, *string) error) error {
+func (r *RAGconModel) TranscribeAudioWithSender(modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
 	if sender == nil {
 		return fmt.Errorf("sender is required")
 	}
@@ -819,7 +786,7 @@ func (r *RAGconModel) newTTSRequest(ctx context.Context, modelName *string, audi
 	return req, streamFormat, nil
 }
 
-func (r *RAGconModel) AudioSpeech(modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig) (*TTSResponse, error) {
+func (r *RAGconModel) AudioSpeech(modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, modelUsage *common.ModelUsage) (*TTSResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), nonStreamCallTimeout)
 	defer cancel()
 
@@ -845,7 +812,7 @@ func (r *RAGconModel) AudioSpeech(modelName *string, audioContent *string, apiCo
 	return &TTSResponse{Audio: body}, nil
 }
 
-func (r *RAGconModel) AudioSpeechWithSender(modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, sender func(*string, *string) error) error {
+func (r *RAGconModel) AudioSpeechWithSender(modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
 	if sender == nil {
 		return fmt.Errorf("sender is required")
 	}
@@ -876,12 +843,12 @@ func (r *RAGconModel) AudioSpeechWithSender(modelName *string, audioContent *str
 }
 
 // OCRFile is not offered by RAGcon.
-func (r *RAGconModel) OCRFile(modelName *string, content []byte, url *string, apiConfig *APIConfig, ocrConfig *OCRConfig) (*OCRFileResponse, error) {
+func (r *RAGconModel) OCRFile(modelName *string, content []byte, url *string, apiConfig *APIConfig, ocrConfig *OCRConfig, modelUsage *common.ModelUsage) (*OCRFileResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", r.Name())
 }
 
 // ParseFile is not offered by RAGcon.
-func (r *RAGconModel) ParseFile(modelName *string, content []byte, url *string, apiConfig *APIConfig, parseFileConfig *ParseFileConfig) (*ParseFileResponse, error) {
+func (r *RAGconModel) ParseFile(modelName *string, content []byte, url *string, apiConfig *APIConfig, parseFileConfig *ParseFileConfig, modelUsage *common.ModelUsage) (*ParseFileResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", r.Name())
 }
 

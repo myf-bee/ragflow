@@ -54,13 +54,17 @@ var registry = map[string]Factory{
 	"search_my_dateset":     buildRetrievalTool,
 	"searxng":               buildSearXNGTool,
 	"tavily":                buildTavilyTool,
-	"tavily_extract":        buildTavilyExtractTool,
-	"tushare":               noConfig("tushare", func() einotool.BaseTool { return NewTushareTool() }),
-	"wencai":                buildWencaiTool,
-	"web_crawler":           noConfig("web_crawler", func() einotool.BaseTool { return NewCrawlerTool() }),
-	"wikipedia":             buildWikipediaTool,
-	"wikipedia_search":      buildWikipediaTool,
-	"yahoo_finance":         buildYahooFinanceTool,
+	// Agent DSL tool lists carry the Python Canvas component_name verbatim.
+	// BuildByName lower-cases names, so register those component names too.
+	"tavilysearch":     buildTavilyTool,
+	"tavily_extract":   buildTavilyExtractTool,
+	"tavilyextract":    buildTavilyExtractTool,
+	"tushare":          noConfig("tushare", func() einotool.BaseTool { return NewTushareTool() }),
+	"wencai":           buildWencaiTool,
+	"web_crawler":      noConfig("web_crawler", func() einotool.BaseTool { return NewCrawlerTool() }),
+	"wikipedia":        buildWikipediaTool,
+	"wikipedia_search": buildWikipediaTool,
+	"yahoo_finance":    buildYahooFinanceTool,
 }
 
 func noConfig(name string, fn func() einotool.BaseTool) Factory {
@@ -582,12 +586,26 @@ func buildWikipediaTool(params map[string]any) (einotool.BaseTool, error) {
 
 func buildYahooFinanceTool(params map[string]any) (einotool.BaseTool, error) {
 	defaults := defaultYahooFinanceParams()
-	if value, exists := params["info"]; exists {
+	boolFields := map[string]*bool{
+		"info":                &defaults.Info,
+		"history":             &defaults.History,
+		"count":               &defaults.Count,
+		"financials":          &defaults.Financials,
+		"income_stmt":         &defaults.IncomeStmt,
+		"balance_sheet":       &defaults.BalanceSheet,
+		"cash_flow_statement": &defaults.CashFlowStatement,
+		"news":                &defaults.News,
+	}
+	for key, target := range boolFields {
+		value, exists := params[key]
+		if !exists {
+			continue
+		}
 		flag, valid := value.(bool)
 		if !valid {
-			return nil, fmt.Errorf("agent tool: tool %q requires boolean node-level param info", "yahoo_finance")
+			return nil, fmt.Errorf("agent tool: tool %q requires boolean node-level param %s", "yahoo_finance", key)
 		}
-		defaults.Info = flag
+		*target = flag
 	}
 	return NewYahooFinanceToolWithDefaults(nil, defaults), nil
 }
