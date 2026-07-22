@@ -12,7 +12,7 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
-// test ci 6 7 10 install  token
+// test ci 6 7 10 install  token 2
 
 package cli
 
