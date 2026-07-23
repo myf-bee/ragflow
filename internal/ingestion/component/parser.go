@@ -81,7 +81,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"go.uber.org/zap"
+
 	"ragflow/internal/agent/runtime"
+	"ragflow/internal/common"
 	"ragflow/internal/ingestion/component/globals"
 	"ragflow/internal/ingestion/component/schema"
 	"ragflow/internal/utility"
@@ -104,10 +107,8 @@ const pageFormFeed = '\f'
 // the goroutine that returned from Invoke. The static Param is
 // read-only after construction.
 type ParserComponent struct {
-	// Param is the static configuration from schema.ParserParam.
-	// Kept as a value (not a pointer) so callers can pass literals
-	// and the component makes its own copy.
-	Param schema.ParserParam
+	Setups map[string]schema.ParserSetup
+	Param  schema.ParserParam
 }
 
 // NewParserComponent constructs a Parser from a DSL param map.
@@ -119,7 +120,9 @@ type ParserComponent struct {
 // schema.ParserParam.Defaults() values):
 //
 //	{
-//	  "setups":               map[string]map[string]any,
+//	  "pdf":                  map[string]any,
+//	  "docx":                 map[string]any,
+//	  ...
 //	  "allowed_output_format": map[string][]string,
 //	}
 //
@@ -127,32 +130,23 @@ type ParserComponent struct {
 // param is caught at build time rather than mid-run.
 func NewParserComponent(params map[string]any) (runtime.Component, error) {
 	p := schema.ParserParam{}.Defaults()
+	s := defaultSetups()
 	if params == nil {
-		return &ParserComponent{Param: p}, nil
+		return &ParserComponent{Setups: s, Param: p}, nil
 	}
-	// Setups — best-effort decode. A type mismatch in a single
-	// setup entry drops just that entry; the rest of the table
-	// remains usable. This matches the python behaviour of
-	// accepting whatever shape the JSON loader hands back.
-	if rawSetups, ok := params["setups"].(map[string]any); ok {
-		for fileType, raw := range rawSetups {
-			setupMap, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if p.Setups == nil {
-				p.Setups = make(map[string]schema.ParserSetup)
-			}
-			// Normalise to the canonical family name ("picture",
-			// "video", …) so downstream lookups via
-			// resolveParserFamily, maybeDispatchImage, etc. find
-			// the entry regardless of what key the template DSL
-			// used (e.g. "image", "visual", "picture").
-			family := pythonFamilyName(fileType)
-			if family == "" {
-				family = fileType
-			}
-			p.Setups[family] = schema.ParserSetup(setupMap)
+	for k, raw := range params {
+		if k == "outputs" {
+			continue
+		}
+		ftCfg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := s[k]; !exists {
+			s[k] = schema.ParserSetup{}
+		}
+		for fk, fv := range ftCfg {
+			s[k][fk] = fv
 		}
 	}
 	if rawAllowed, ok := params["allowed_output_format"].(map[string]any); ok {
@@ -172,7 +166,101 @@ func NewParserComponent(params map[string]any) (runtime.Component, error) {
 		}
 		p.AllowedOutputFormat = allowed
 	}
-	return &ParserComponent{Param: p}, nil
+	return &ParserComponent{Setups: s, Param: p}, nil
+}
+
+func defaultSetups() map[string]schema.ParserSetup {
+	return map[string]schema.ParserSetup{
+		"pdf": {
+			"parse_method":          "deepdoc",
+			"lang":                  "Chinese",
+			"flatten_media_to_text": false,
+			"remove_toc":            false,
+			"remove_header_footer":  false,
+			"suffix":                []string{"pdf"},
+			"output_format":         "json",
+		},
+		"spreadsheet": {
+			"parse_method":          "deepdoc",
+			"flatten_media_to_text": false,
+			"output_format":         "html",
+			"suffix":                []string{"xls", "xlsx", "csv"},
+		},
+		"doc": {
+			"remove_toc":           false,
+			"remove_header_footer": false,
+			"suffix":               []string{"doc"},
+			"output_format":        "json",
+		},
+		"docx": {
+			"flatten_media_to_text": false,
+			"remove_toc":            false,
+			"remove_header_footer":  false,
+			"suffix":                []string{"docx"},
+			"output_format":         "json",
+		},
+		"markdown": {
+			"flatten_media_to_text": false,
+			"suffix":                []string{"md", "markdown", "mdx"},
+			"remove_toc":            false,
+			"output_format":         "json",
+		},
+		"text&code": {
+			"suffix": []string{
+				"txt", "py", "js", "java", "c", "cpp", "h", "php",
+				"go", "ts", "sh", "cs", "kt", "sql",
+			},
+			"output_format": "json",
+		},
+		"html": {
+			"suffix":               []string{"htm", "html"},
+			"remove_toc":           false,
+			"remove_header_footer": false,
+			"output_format":        "json",
+		},
+		"slides": {
+			"parse_method":  "deepdoc",
+			"suffix":        []string{"pptx", "ppt"},
+			"output_format": "json",
+		},
+		"image": {
+			"parse_method":  "ocr",
+			"llm_id":        "",
+			"lang":          "Chinese",
+			"system_prompt": "",
+			"suffix":        []string{"jpg", "jpeg", "png", "gif"},
+			"output_format": "json",
+		},
+		"email": {
+			"suffix": []string{"eml", "msg"},
+			"fields": []string{
+				"from", "to", "cc", "bcc", "date", "subject",
+				"body", "attachments", "metadata",
+			},
+			"output_format": "text",
+		},
+		"audio": {
+			"suffix": []string{
+				"da", "wave", "wav", "mp3", "aac", "flac", "ogg",
+				"aiff", "au", "midi", "wma", "realaudio", "vqf",
+				"oggvorbis", "ape",
+			},
+			"output_format": "text",
+		},
+		"video": {
+			"suffix":        []string{"mp4", "avi", "mkv"},
+			"output_format": "text",
+			"prompt":        "",
+		},
+		"epub": {
+			"suffix":        []string{"epub"},
+			"output_format": "json",
+		},
+		"json": {
+			"suffix":        []string{"json", "jsonl", "ldjson"},
+			"output_format": "json",
+		},
+	}
 }
 
 // Inputs returns the static parameter metadata. The component
@@ -210,6 +298,7 @@ func (c *ParserComponent) Outputs() map[string]string {
 		"pages":         "[]schema.Page: parsed pages sorted by PageNumber.",
 		"name":          "string: the upstream file/document name (or doc_id when no name is available).",
 		"output_format": "string: the active output format (\"text\" when emitting text pages).",
+		"lang":          "string: the language for tokenization (e.g. English, Dutch, Chinese).",
 		"_ERROR":        "string: set on short-circuit errors.",
 	}
 }
@@ -222,6 +311,7 @@ func (c *ParserComponent) Outputs() map[string]string {
 //	  "pages":          []schema.Page (sorted by PageNumber),
 //	  "name":           string (from inputs["doc_id"]),
 //	  "output_format": "text",
+//	  "lang":           string (from inputs["lang"]; e.g. English, Dutch),
 //	  "_created_time":  RFC3339Nano (via TrackElapsed),
 //	  "_elapsed_time":  float64 seconds (via TrackElapsed),
 //	}
@@ -245,6 +335,15 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	}
 	docID, _ := inputs["doc_id"].(string)
 	filename := parserInputName(inputs, docID)
+
+	// Inject run-level metadata from Globals into inputs so media
+	// dispatch branches (audio/image/video) can resolve tenant_id.
+	// The File component upstream does not emit tenant_id; the pipeline
+	// runner seeds it into CanvasState.Globals, and the Parser must pull
+	// it back into the local inputs map for the dispatch functions.
+	if tid := globals.GlobalOrInput(ctx, inputs, "tenant_id", ""); tid != "" {
+		inputs["tenant_id"] = tid
+	}
 
 	// 2. Resolve the file family from the inputs. When the family
 	//    is known, dispatchParse returns a typed parser payload.
@@ -272,13 +371,13 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	//     family-specific allowed_output_format whitelist. We do
 	//     this even when no setups entry exists so a misconfigured
 	//     DSL surfaces as _ERROR instead of a silent fallback.
-	if _, hasSetup := c.Param.Setups[fileTypeFam]; hasSetup {
-		if _, verr := resolveOutputFormat(fileTypeFam, c.Param.Setups, c.Param.AllowedOutputFormat); verr != nil {
+	if _, hasSetup := c.Setups[fileTypeFam]; hasSetup {
+		if _, verr := resolveOutputFormat(fileTypeFam, c.Setups, c.Param.AllowedOutputFormat); verr != nil {
 			return nil, verr
 		}
 	}
 
-	dispatched, handledVision, visionErr := maybeDispatchPDFVision(fileTypeExt, filename, binary, inputs, c.Param.Setups)
+	dispatched, handledVision, visionErr := maybeDispatchPDFVision(fileTypeExt, filename, binary, inputs, c.Setups)
 	if visionErr != nil {
 		return nil, visionErr
 	}
@@ -287,7 +386,7 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	if !handledVision {
 		// Video dispatch: IMAGE2TEXT vision chat.
 		// Mirrors Python's _video().
-		dispatched, handledMedia, visionErr = maybeDispatchVideo(fileTypeExt, filename, binary, inputs, c.Param.Setups)
+		dispatched, handledMedia, visionErr = maybeDispatchVideo(fileTypeExt, filename, binary, inputs, c.Setups)
 		if visionErr != nil {
 			return nil, visionErr
 		}
@@ -296,7 +395,7 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	if !handledVision && !handledMedia {
 		// Image/Picture dispatch: OCR + IMAGE2TEXT vision describe.
 		// Mirrors Python's rag/app/picture.py:chunk() image branch.
-		dispatched, handledImage, visionErr = maybeDispatchImage(fileTypeExt, filename, binary, inputs, c.Param.Setups)
+		dispatched, handledImage, visionErr = maybeDispatchImage(fileTypeExt, filename, binary, inputs, c.Setups)
 		if visionErr != nil {
 			return nil, visionErr
 		}
@@ -305,19 +404,19 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	if !handledVision && !handledMedia && !handledImage {
 		// Audio dispatch: SPEECH2TEXT transcription.
 		// Mirrors Python's rag/app/audio.py:chunk().
-		dispatched, handledAudio, visionErr = maybeDispatchAudio(fileTypeExt, filename, binary, inputs, c.Param.Setups)
+		dispatched, handledAudio, visionErr = maybeDispatchAudio(fileTypeExt, filename, binary, inputs, c.Setups)
 		if visionErr != nil {
 			return nil, visionErr
 		}
 	}
 	if !handledVision && !handledMedia && !handledImage && !handledAudio {
-		dispatched = dispatchParse(fileTypeExt, filename, binary, c.Param.Setups)
+		dispatched = dispatchParse(fileTypeExt, filename, binary, c.Setups)
 		dispatched = hydrateEmptyDispatchPayload(dispatched, binary)
 
 		// DOCX vision figure enhancement: enrich the markdown
 		// with LLM-generated descriptions of embedded images.
 		// Mirrors Python's vision_figure_parser_docx_wrapper_naive.
-		dispatched, _, _ = maybeDispatchDOCXVision(fileTypeExt, dispatched, inputs, c.Param.Setups)
+		dispatched, _, _ = maybeDispatchDOCXVision(fileTypeExt, dispatched, inputs, c.Setups)
 
 		// Markdown vision figure enhancement: enrich parsed
 		// markdown JSON items with LLM-generated descriptions of
@@ -373,7 +472,8 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 		return nil, fmt.Errorf("Parser: %w", err)
 	}
 	sortPagesByNumber(parsed)
-	out := buildParserOutputs(parsed, dispatched, filename, fileTypeExt)
+	lang, _ := getString(inputs, "lang")
+	out := buildParserOutputs(parsed, dispatched, filename, fileTypeExt, lang)
 	// Forward the storage references so a downstream chunker can
 	// re-acquire the source PDF and crop section images on demand,
 	// instead of carrying the binary across the component boundary.
@@ -392,6 +492,19 @@ func (c *ParserComponent) Invoke(ctx context.Context, inputs map[string]any) (ma
 	// forwards only this explicit output to the next node, so shared
 	// fields must live in Globals.
 	globals.PublishGlobals(ctx, out)
+	// Debug log: summarize parser output for pipeline debugging.
+	if dispatched.OutputFormat == "json" {
+		common.Debug("parser stage output",
+			zap.String("component", "Parser"),
+			zap.String("output_format", "json"),
+			zap.Int("json_items", len(dispatched.JSON)),
+		)
+	} else if dispatched.OutputFormat != "" {
+		common.Debug("parser stage output",
+			zap.String("component", "Parser"),
+			zap.String("output_format", dispatched.OutputFormat),
+		)
+	}
 	// Progress (_created_time / _elapsed_time stamping, start/done
 	// callbacks) is owned by the canvas framework (realComponentBody),
 	// not by this component, so we return the work result directly.

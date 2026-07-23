@@ -111,6 +111,8 @@ func (f *ModelFactory) CreateModelDriver(providerName string, baseURL map[string
 		return NewNovitaModel(baseURL, urlSuffix), nil
 	case "avian":
 		return NewAvianModel(baseURL, urlSuffix), nil
+	case "ragcon":
+		return NewRAGconModel(baseURL, urlSuffix), nil
 	case "replicate":
 		return NewReplicateModel(baseURL, urlSuffix), nil
 	case "togetherai":
@@ -153,6 +155,8 @@ func (f *ModelFactory) CreateModelDriver(providerName string, baseURL map[string
 		return NewQiniuModel(baseURL, urlSuffix), nil
 	case "xiaomi":
 		return NewXiaomiModel(baseURL, urlSuffix), nil
+	case "funasr":
+		return NewFunASRModel(baseURL, urlSuffix), nil
 	default:
 		return NewDummyModel(baseURL, urlSuffix), nil
 	}

@@ -17,9 +17,11 @@
 package service
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"ragflow/internal/common"
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
@@ -148,10 +150,29 @@ type ModelProviderService struct {
 
 // CheckConnectionRequest carries the credentials and optional instance selector
 // for checking provider connectivity without creating a new model instance.
+type CheckConnectionModelInfo struct {
+	ModelName  string                 `json:"model_name"`
+	ModelTypes []string               `json:"model_type"`
+	MaxTokens  int                    `json:"max_tokens"`
+	Extra      map[string]interface{} `json:"extra"`
+}
+
+func ListModelNames(modelInfo []CheckConnectionModelInfo) []string {
+	names := make([]string, 0, len(modelInfo))
+	for _, mi := range modelInfo {
+		if mi.ModelName != "" {
+			names = append(names, mi.ModelName)
+		}
+	}
+	return names
+}
+
 type CheckConnectionRequest struct {
-	APIKey  string `json:"api_key"`
-	Region  string `json:"region"`
-	BaseURL string `json:"base_url"`
+	APIKey     string                     `json:"api_key"`
+	Region     string                     `json:"region"`
+	BaseURL    string                     `json:"base_url"`
+	InstanceID string                     `json:"instance_id"`
+	ModelInfo  []CheckConnectionModelInfo `json:"model_info"`
 }
 
 func (m *ModelProviderService) AddModelProvider(providerName, userID string) (common.ErrorCode, error) {
@@ -849,7 +870,7 @@ func (m *ModelProviderService) ShowInstanceBalance(providerName, instanceName, u
 	return result, common.CodeSuccess, nil
 }
 
-func (m *ModelProviderService) CheckConnection(providerName, apiKey, region, baseURL string, userID string) (common.ErrorCode, error) {
+func (m *ModelProviderService) CheckConnection(providerName, apiKey, region, baseURL, instanceID, userID string, modelInfo []string) (common.ErrorCode, error) {
 	providerInfo := dao.GetModelProviderManager().FindProvider(providerName)
 	if providerInfo == nil {
 		return common.CodeServerError, fmt.Errorf("provider %s not found", providerName)
@@ -885,7 +906,290 @@ func (m *ModelProviderService) CheckConnection(providerName, apiKey, region, bas
 		return common.CodeServerError, err
 	}
 
+	// Mirror Python verify_api_key: verify each model by making a real
+	// lightweight API request.  Returns per-model verify results.
+	modelVerifyResult, verifyErr := verifyProviderModel(driver, providerInfo.Models, apiConfig, modelInfo)
+
+	// When instanceID is provided (frontend passes it), persist the verify
+	// results to the database — mirrors Python's per-model update_model calls
+	// inside the /connection/verify REST endpoint.
+	if instanceID != "" && len(modelVerifyResult) > 0 {
+		if dbErr := m.updateModelVerifyResults(userID, providerName, instanceID, modelVerifyResult); dbErr != nil {
+			common.Logger.Error("failed to persist model verify results", zap.Error(dbErr))
+		}
+	}
+
+	if verifyErr != nil {
+		return common.CodeServerError, verifyErr
+	}
+
 	return common.CodeSuccess, nil
+}
+
+// updateModelVerifyResults persists the per-model verification status to the
+// tenant_model table.  It mirrors the Python update_model() called from the
+// /api/v1/providers/<name>/connection/verify endpoint when instance_id is
+// present in the request body.
+func (m *ModelProviderService) updateModelVerifyResults(userID, providerName, instanceID string, modelVerifyResult map[string]string) error {
+	// Resolve tenant from user.
+	userTenants, err := m.userTenantDAO.GetByUserID(userID)
+	if err != nil || len(userTenants) == 0 {
+		return fmt.Errorf("no tenant found for user %s", userID)
+	}
+	tenantID := userTenants[0].TenantID
+
+	// Resolve provider DB record from tenant + provider name.
+	provider, err := m.modelProviderDAO.GetByTenantIDAndProviderName(tenantID, providerName)
+	if err != nil {
+		return fmt.Errorf("provider %s not found for tenant %s: %w", providerName, tenantID, err)
+	}
+
+	for modelName, verifyStatus := range modelVerifyResult {
+		modelObj, err := m.modelDAO.GetModelByProviderIDAndInstanceIDAndModelName(provider.ID, instanceID, modelName)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// No existing row — nothing to update (default is active).
+				continue
+			}
+			return fmt.Errorf("failed to look up %s for verify update: %w", modelName, err)
+		}
+
+		extra := make(map[string]interface{})
+		if modelObj.Extra != "" {
+			_ = json.Unmarshal([]byte(modelObj.Extra), &extra)
+		}
+		extra["verify"] = verifyStatus
+		extraJSON, err := json.Marshal(extra)
+		if err != nil {
+			return fmt.Errorf("failed to marshal extra for %s: %w", modelName, err)
+		}
+
+		if err := m.modelDAO.UpdateByID(modelObj.ID, map[string]interface{}{
+			"extra": string(extraJSON),
+		}); err != nil {
+			return fmt.Errorf("failed to update verify status for %s: %w", modelName, err)
+		}
+	}
+
+	return nil
+}
+
+// verifyProviderModel mirrors Python verify_api_key's model-level verification.
+// It tries each model registered for the provider in the factory JSON config
+// and returns a map of modelName → verify status ("success"/"fail") so the
+// caller can persist the results to the database.  A nil error means at least
+// one model passed verification.
+func verifyProviderModel(driver modelModule.ModelDriver, providerModels []*modelModule.Model, apiConfig *modelModule.APIConfig, modelInfo []string) (map[string]string, error) {
+	modelVerifyResult := make(map[string]string)
+
+	// Determine which models to verify: prefer the caller-supplied modelInfo
+	// list; fall back to the full provider model catalog.
+	var modelsToVerify []*modelModule.Model
+	if len(modelInfo) > 0 {
+		providerModelMap := make(map[string]*modelModule.Model, len(providerModels))
+		for _, m := range providerModels {
+			providerModelMap[m.Name] = m
+		}
+		for _, name := range modelInfo {
+			name = strings.TrimSpace(name)
+			if m, ok := providerModelMap[name]; ok {
+				modelsToVerify = append(modelsToVerify, m)
+			}
+		}
+	} else {
+		modelsToVerify = providerModels
+	}
+
+	if len(modelsToVerify) == 0 {
+		return modelVerifyResult, fmt.Errorf("no models found for provider")
+	}
+
+	var errs []error
+	errSet := make(map[string]bool)
+	passedTypes := make(map[string]bool)
+
+	for _, model := range modelsToVerify {
+		modelName := model.Name
+		anyPassed := false
+
+		for _, modelType := range model.ModelTypes {
+			mtLower := strings.ToLower(modelType)
+
+			// If a model type we've already verified successfully, skip.
+			if passedTypes[mtLower] {
+				continue
+			}
+
+			var err error
+
+			switch mtLower {
+			case "chat", "vision":
+				msg := []modelModule.Message{{Role: "user", Content: "Hi"}}
+				_, err = driver.ChatWithMessages(modelName, msg, apiConfig, nil, nil)
+			case "embedding":
+				_, err = driver.Embed(&modelName, []string{"test"}, apiConfig, nil, nil)
+			case "rerank":
+				_, err = driver.Rerank(&modelName, "test", []string{"test"}, apiConfig, &modelModule.RerankConfig{}, nil)
+			case "tts":
+				content := "hello"
+				_, err = driver.AudioSpeech(&modelName, &content, apiConfig, nil, nil)
+			case "asr":
+				err = verifyASRModel(driver, modelName, apiConfig)
+			case "ocr":
+				err = verifyOCRModel(driver, modelName, apiConfig)
+			default:
+				continue
+			}
+
+			if err == nil {
+				passedTypes[mtLower] = true
+				anyPassed = true
+				break
+			}
+
+			apiErr := extractAPIErrorMessage(err)
+			if !errSet[apiErr.Error()] {
+				errSet[apiErr.Error()] = true
+				errs = append(errs, apiErr)
+			}
+		}
+
+		if anyPassed {
+			modelVerifyResult[modelName] = entity.ModelVerifySuccess
+		} else {
+			modelVerifyResult[modelName] = entity.ModelVerifyFail
+		}
+	}
+
+	if len(passedTypes) == 0 {
+		return modelVerifyResult, fmt.Errorf("all model verification attempts failed: %w", errors.Join(errs...))
+	}
+
+	return modelVerifyResult, nil
+}
+
+// extractAPIErrorMessage tries to parse the `message` field from a JSON error
+// body embedded in a Go error string.  If the body is valid JSON with a
+// non-empty "message" key, the returned error contains only that message;
+// otherwise the original error is returned unchanged.
+func extractAPIErrorMessage(err error) error {
+	msg := err.Error()
+	// Look for the last '{'...'}' substring — that is typically the JSON body
+	// appended by API drivers like "API request failed with status 400: {...}".
+	start := strings.LastIndexByte(msg, '{')
+	if start < 0 {
+		return err
+	}
+	end := strings.LastIndexByte(msg, '}')
+	if end <= start {
+		return err
+	}
+	jsonStr := msg[start : end+1]
+
+	var body struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(jsonStr), &body) != nil || body.Message == "" {
+		return err
+	}
+	return fmt.Errorf("%s", body.Message)
+}
+
+// generateTestWAV creates a minimal silent WAV (16-bit mono PCM, 0.5 second,
+// 16000 Hz sample rate) as a byte slice. Mirrors Python
+// sequence2txt_model.py's _generate_test_wav: pure stdlib, no dependencies.
+func generateTestWAV() []byte {
+	const (
+		sampleRate      = 16000
+		durationSeconds = 0.5
+		numChannels     = 1
+		bitsPerSample   = 16
+	)
+	numSamples := int(sampleRate * durationSeconds)
+	dataSize := numSamples * numChannels * (bitsPerSample / 8)
+
+	var buf []byte
+
+	// RIFF header
+	buf = append(buf, []byte("RIFF")...)
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(36+dataSize))
+	buf = append(buf, []byte("WAVE")...)
+
+	// fmt sub-chunk
+	buf = append(buf, []byte("fmt ")...)
+	buf = binary.LittleEndian.AppendUint32(buf, 16)                  // sub-chunk size
+	buf = binary.LittleEndian.AppendUint16(buf, 1)                   // PCM
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(numChannels)) // mono
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(sampleRate))
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(sampleRate*numChannels*bitsPerSample/8)) // byte rate
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(numChannels*bitsPerSample/8))            // block align
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(bitsPerSample))
+
+	// data sub-chunk
+	buf = append(buf, []byte("data")...)
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(dataSize))
+	buf = append(buf, make([]byte, dataSize)...) // silence
+
+	return buf
+}
+
+// verifyASRModel mirrors Python sequence2txt_model.py's check_available:
+// generates a minimal test WAV, writes it to a temp file, calls
+// TranscribeAudio, and checks the result for errors.
+func verifyASRModel(driver modelModule.ModelDriver, modelName string, apiConfig *modelModule.APIConfig) error {
+	wavData := generateTestWAV()
+
+	tmpFile, err := os.CreateTemp("", "ragflow-asr-verify-*.wav")
+	if err != nil {
+		return fmt.Errorf("failed to create temp WAV for ASR verification: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.Write(wavData); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write test WAV: %w", err)
+	}
+	tmpFile.Close()
+
+	resp, err := driver.TranscribeAudio(&modelName, &tmpPath, apiConfig, nil, nil)
+	if err != nil {
+		return err
+	}
+	if resp == nil || resp.Text == "" {
+		return fmt.Errorf("ASR model %s returned no transcription", modelName)
+	}
+	return nil
+}
+
+// verifyOCRModel mirrors Python OCRModel.check_available by sending a
+// minimal PNG (1×1 pixel white) through the OCR pipeline.  Most OCR
+// providers return an error or empty text for such a trivial image;
+// we accept any non-error response as a successful connectivity check.
+func verifyOCRModel(driver modelModule.ModelDriver, modelName string, apiConfig *modelModule.APIConfig) error {
+	// Send a minimal 1×1 white PNG through the OCR pipeline to verify
+	// connectivity. Most OCRModel drivers only check server reachability
+	// rather than performing full document parsing.
+	_, err := driver.OCRFile(&modelName, minimalPNG(), nil, apiConfig, nil, nil)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// minimalPNG returns a 1×1 white PNG as a byte slice for OCR verification.
+func minimalPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+		0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+		0x54, 0x08, 0xD7, 0x63, 0x60, 0x60, 0xF8, 0x0F,
+		0x00, 0x01, 0x01, 0x00, 0x05, 0x18, 0xD8, 0x32,
+		0x48, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+		0x44, 0xAE, 0x42, 0x60, 0x82,
+	}
 }
 
 func (m *ModelProviderService) CheckInstanceConnection(providerName, instanceName, userID string) (common.ErrorCode, error) {
@@ -1158,6 +1462,34 @@ func (m *ModelProviderService) ListTenantAddedModels(userID, ownerTenantID, mode
 		return nil, common.CodeServerError, err
 	}
 
+	// Repair records that have model_type == 0. Before the ModelTypeFromString
+	// fix that added "asr" support, models whose factory catalog used the
+	// canonical name "asr" (instead of the legacy "speech2text") were stored
+	// with model_type = 0. Re-derive the correct bitmask from the factory
+	// catalog and persist it so the model shows up in typed queries.
+	providerManager := dao.GetModelProviderManager()
+	for _, rec := range modelRecords {
+		if rec.ModelType != 0 {
+			continue
+		}
+		provInfo := providerInfoByID[rec.ProviderID]
+		if provInfo == nil {
+			continue
+		}
+		factoryModel, lookupErr := providerManager.GetModelByName(provInfo.ProviderName, rec.ModelName)
+		if lookupErr != nil || len(factoryModel.ModelTypes) == 0 {
+			continue
+		}
+		combinedType := entity.ModelType(0)
+		for _, t := range factoryModel.ModelTypes {
+			combinedType |= entity.ModelTypeFromString(t)
+		}
+		if combinedType != 0 {
+			rec.ModelType = int(combinedType)
+			_ = m.modelDAO.UpdateByID(rec.ID, map[string]interface{}{"model_type": int(combinedType)})
+		}
+	}
+
 	var targetRecords []*entity.TenantModel
 	if modelTypeFilterBin != 0 {
 		for _, rec := range modelRecords {
@@ -1170,7 +1502,6 @@ func (m *ModelProviderService) ListTenantAddedModels(userID, ownerTenantID, mode
 	}
 
 	// Build model rank map from factory catalog (mirrors Python's model_rank_map).
-	providerManager := dao.GetModelProviderManager()
 	modelRankMap := make(map[string]int) // key: "providerName@modelName"
 	factoryRankMapping := make(map[string]int)
 	for i := range providerManager.Providers {
@@ -1312,15 +1643,165 @@ func (m *ModelProviderService) resolveModelListTenant(userID, ownerTenantID stri
 	return tenant, common.CodeSuccess, nil
 }
 
-// ensureMineruFromEnv is a stub that mirrors Python's ensure_mineru_from_env.
+// ensureMineruFromEnv mirrors Python's ensure_mineru_from_env.
 // It ensures a MinerU OCR provider instance exists when env vars are configured.
-func (m *ModelProviderService) ensureMineruFromEnv(tenantID string) error { return nil }
+func (m *ModelProviderService) ensureMineruFromEnv(tenantID string) error {
+	config := collectEnvConfig(mineruEnvKeys, mineruDefaultConfig)
+	return m.ensureOCRProviderFromEnv(tenantID, "MinerU", "mineru-from-env", config)
+}
 
-// ensurePaddleOCREnabledFromEnv is a stub that mirrors Python's ensure_paddleocr_from_env.
-func (m *ModelProviderService) ensurePaddleOCREnabledFromEnv(tenantID string) error { return nil }
+// ensurePaddleOCREnabledFromEnv mirrors Python's ensure_paddleocr_from_env.
+func (m *ModelProviderService) ensurePaddleOCREnabledFromEnv(tenantID string) error {
+	config := collectEnvConfig(paddleOCREnvKeys, paddleOCRDefaultConfig)
+	return m.ensureOCRProviderFromEnv(tenantID, "PaddleOCR", "paddleocr-from-env", config)
+}
 
-// ensureOpenDataLoaderFromEnv is a stub that mirrors Python's ensure_opendataloader_from_env.
-func (m *ModelProviderService) ensureOpenDataLoaderFromEnv(tenantID string) error { return nil }
+// ensureOpenDataLoaderFromEnv mirrors Python's ensure_opendataloader_from_env.
+func (m *ModelProviderService) ensureOpenDataLoaderFromEnv(tenantID string) error {
+	config := collectEnvConfig(openDataLoaderEnvKeys, openDataLoaderDefaultConfig)
+	return m.ensureOCRProviderFromEnv(tenantID, "OpenDataLoader", "opendataloader-from-env", config)
+}
+
+// env key / default config tables for the three OCR providers.
+// Mirrors common/constants.py MINERU_ENV_KEYS, PADDLEOCR_ENV_KEYS, OPENDATALOADER_ENV_KEYS.
+var (
+	mineruEnvKeys = []string{
+		common.EnvMineruApiServer,
+		"MINERU_OUTPUT_DIR",
+		common.EnvMineruBackend,
+		"MINERU_SERVER_URL",
+		"MINERU_DELETE_OUTPUT",
+	}
+	mineruDefaultConfig = map[string]interface{}{
+		common.EnvMineruApiServer: "",
+		"MINERU_OUTPUT_DIR":       "",
+		common.EnvMineruBackend:   "pipeline",
+		"MINERU_SERVER_URL":       "",
+		"MINERU_DELETE_OUTPUT":    1,
+	}
+	paddleOCREnvKeys = []string{
+		common.EnvPaddleOCRBaseUrl,
+		common.EnvPaddleOCRApiURL,
+		common.EnvPaddleOCRAccessToken,
+		common.EnvPaddleOCRAlgorithm,
+	}
+	paddleOCRDefaultConfig = map[string]interface{}{
+		common.EnvPaddleOCRBaseUrl:     "",
+		common.EnvPaddleOCRApiURL:      "",
+		common.EnvPaddleOCRAccessToken: nil,
+		common.EnvPaddleOCRAlgorithm:   "PaddleOCR-VL",
+	}
+	openDataLoaderEnvKeys = []string{
+		common.EnvOpenDataLoaderApiServer,
+	}
+	openDataLoaderDefaultConfig = map[string]interface{}{
+		common.EnvOpenDataLoaderApiServer: "",
+	}
+)
+
+// collectEnvConfig collects environment variable values for the given keys
+// into a map pre-populated with defaultConfig. Returns nil if none of the
+// env vars are actually set, matching Python's _collect_env_config.
+func collectEnvConfig(envKeys []string, defaultConfig map[string]interface{}) map[string]interface{} {
+	config := make(map[string]interface{}, len(defaultConfig))
+	for k, v := range defaultConfig {
+		config[k] = v
+	}
+	found := false
+	for _, key := range envKeys {
+		value := os.Getenv(key)
+		if value != "" {
+			found = true
+			config[key] = value
+		}
+	}
+	if !found {
+		return nil
+	}
+	return config
+}
+
+// ensureOCRProviderFromEnv mirrors Python's _ensure_ocr_provider_from_env.
+// It finds or creates a provider, instance, and model for the given OCR provider.
+func (m *ModelProviderService) ensureOCRProviderFromEnv(tenantID, providerName, modelName string, config map[string]interface{}) error {
+	if config == nil {
+		return nil
+	}
+
+	// 1. Find or create the provider.
+	provider, err := m.modelProviderDAO.GetByTenantIDAndProviderName(tenantID, providerName)
+	if err != nil {
+		if !dao.IsNotFoundErr(err) {
+			return fmt.Errorf("failed to get provider %s: %w", providerName, err)
+		}
+		providerID := utility.GenerateToken()
+		provider = &entity.TenantModelProvider{
+			ID:           providerID,
+			TenantID:     tenantID,
+			ProviderName: providerName,
+		}
+		if err := m.modelProviderDAO.Create(provider); err != nil {
+			return fmt.Errorf("failed to create provider %s: %w", providerName, err)
+		}
+	}
+
+	// 2. Find or create the instance (api_key stores the JSON config for dedup).
+	apiKeyBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config for %s: %w", providerName, err)
+	}
+	apiKey := string(apiKeyBytes)
+
+	instance, err := m.modelInstanceDAO.GetInstanceByApiKey(apiKey, provider.ID)
+	if err != nil {
+		if !dao.IsNotFoundErr(err) {
+			return fmt.Errorf("failed to get instance for %s: %w", providerName, err)
+		}
+		instanceID := utility.GenerateToken()
+		instance = &entity.TenantModelInstance{
+			ID:           instanceID,
+			ProviderID:   provider.ID,
+			InstanceName: modelName,
+			APIKey:       apiKey,
+			Extra:        "{}",
+		}
+		if err := m.modelInstanceDAO.Create(instance); err != nil {
+			return fmt.Errorf("failed to create instance for %s: %w", providerName, err)
+		}
+	}
+
+	// 3. Find or create the model.
+	_, err = m.modelDAO.GetByProviderIDAndInstanceIDAndModelTypeAndModelName(
+		provider.ID,
+		instance.ID,
+		int(entity.ModelTypeOCR),
+		modelName,
+	)
+	if err != nil {
+		if !dao.IsNotFoundErr(err) {
+			return fmt.Errorf("failed to get model for %s: %w", providerName, err)
+		}
+		extraBytes, err := json.Marshal(map[string]int{"max_tokens": 0})
+		if err != nil {
+			return fmt.Errorf("failed to marshal extra for %s model: %w", providerName, err)
+		}
+		modelID := utility.GenerateToken()
+		tenantModel := &entity.TenantModel{
+			ID:         modelID,
+			ModelName:  modelName,
+			ProviderID: provider.ID,
+			InstanceID: instance.ID,
+			ModelType:  int(entity.ModelTypeOCR),
+			Status:     "active",
+			Extra:      string(extraBytes),
+		}
+		if err := m.modelDAO.Create(tenantModel); err != nil {
+			return fmt.Errorf("failed to create model for %s: %w", providerName, err)
+		}
+	}
+
+	return nil
+}
 
 func (m *ModelProviderService) AlterProviderInstance(userID, providerIDOrName, instanceIDOrName, newInstanceName, apiKey, baseURL, region string, modelInfo []CreateInstanceModelInfo, verify bool) (common.ErrorCode, error) {
 	providerIDOrName = strings.TrimSpace(providerIDOrName)
@@ -1518,31 +1999,48 @@ func (m *ModelProviderService) DropProviderInstances(providerIDOrName, userID st
 		return common.CodeServerError, err
 	}
 
-	// Delete each instance by provider_id + instance_name.
-	// Since instance names are unique within a provider, we can delete directly.
+	// First pass: resolve all instance IDs and collect not-found instances.
+	// Mirrors Python's drop_provider_instances which returns error immediately
+	// if any instance does not exist, without performing partial deletion.
 	notExistInstances := make([]string, 0)
-	for _, instanceName := range instanceIDOrNames {
-		instanceObj, err := m.modelInstanceDAO.GetByProviderIDAndInstanceName(provider.ID, instanceName)
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				notExistInstances = append(notExistInstances, instanceName)
-				continue
+	instanceIDs := make([]string, 0, len(instanceIDOrNames))
+	for _, idOrName := range instanceIDOrNames {
+		var instance *entity.TenantModelInstance
+		// Try by ID first, then by name — same as Python.
+		if idOrName != "" {
+			instance, err = m.modelInstanceDAO.GetByID(idOrName)
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return common.CodeServerError, err
 			}
-			return common.CodeServerError, err
+			if instance != nil && instance.ProviderID != provider.ID {
+				instance = nil
+			}
 		}
-
-		// Delete models under this instance first
-		if _, err := m.modelDAO.DeleteByProviderIDAndInstanceID(provider.ID, instanceObj.ID); err != nil {
-			return common.CodeServerError, err
+		if instance == nil {
+			instance, err = m.modelInstanceDAO.GetByProviderIDAndInstanceName(provider.ID, idOrName)
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					notExistInstances = append(notExistInstances, idOrName)
+					continue
+				}
+				return common.CodeServerError, err
+			}
 		}
-
-		// Delete the instance itself
-		if _, err := m.modelInstanceDAO.DeleteByProviderIDAndInstanceName(provider.ID, instanceName); err != nil {
-			return common.CodeServerError, err
-		}
+		instanceIDs = append(instanceIDs, instance.ID)
 	}
+
 	if len(notExistInstances) > 0 {
 		return common.CodeNotFound, fmt.Errorf("no instance found for provider %q and instances %q", providerIDOrName, notExistInstances)
+	}
+
+	// Second pass: delete models and instances by IDs.
+	// Mirrors Python's: delete_models_by_instance_ids(instance_ids)
+	//                   TenantModelInstanceService.delete_by_ids(instance_ids)
+	if _, err := m.modelDAO.DeleteByInstanceIDs(instanceIDs); err != nil {
+		return common.CodeServerError, err
+	}
+	if _, err := m.modelInstanceDAO.DeleteByIDs(instanceIDs); err != nil {
+		return common.CodeServerError, err
 	}
 
 	return common.CodeSuccess, nil
@@ -1597,10 +2095,14 @@ func (m *ModelProviderService) DropInstanceModels(providerIDOrName, instanceIDOr
 		return common.CodeNotFound, fmt.Errorf("Models %v not found for provider '%s' and instance '%s'", notExist, providerIDOrName, instanceIDOrName)
 	}
 
-	// Collect IDs of models to delete.
+	// Collect IDs of only the requested models to delete.
+	requestedNames := make(map[string]struct{}, len(modelNames))
+	for _, name := range modelNames {
+		requestedNames[name] = struct{}{}
+	}
 	idsToDelete := make([]string, 0, len(modelNames))
 	for _, obj := range modelObjs {
-		if _, ok := existingNames[obj.ModelName]; ok {
+		if _, ok := requestedNames[obj.ModelName]; ok {
 			idsToDelete = append(idsToDelete, obj.ID)
 		}
 	}
@@ -2069,7 +2571,7 @@ func (m *ModelProviderService) getModelInstanceAndProviderByID(modelID *string, 
 }
 
 // ChatToModelWithMessages sends messages to the model with messages array
-func (m *ModelProviderService) ChatToModelWithMessages(providerName, instanceName, modelName, modelID *string, userID string, messages []modelModule.Message, apiConfig *modelModule.APIConfig, modelConfig *modelModule.ChatConfig) (*modelModule.ChatResponse, common.ErrorCode, error) {
+func (m *ModelProviderService) ChatToModelWithMessages(providerName, instanceName, modelName, modelID *string, userID string, messages []modelModule.Message, apiConfig *modelModule.APIConfig, modelConfig *modelModule.ChatConfig, modelUsage *common.ModelUsage) (*modelModule.ChatResponse, common.ErrorCode, error) {
 
 	var err error
 	var info *ModelInstanceAndProviderInfo
@@ -2124,7 +2626,11 @@ func (m *ModelProviderService) ChatToModelWithMessages(providerName, instanceNam
 		}
 	}
 
-	response, err = modelDriver.ChatWithMessages(resolvedModelName, messages, info.APIConfig, modelConfig)
+	modelUsage.TenantID = info.ProviderEntity.TenantID
+	modelUsage.InstanceID = info.InstanceEntity.ID
+	modelUsage.APIKey = info.InstanceEntity.APIKey
+
+	response, err = modelDriver.ChatWithMessages(resolvedModelName, messages, info.APIConfig, modelConfig, modelUsage)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2136,7 +2642,7 @@ func (m *ModelProviderService) ChatToModelWithMessages(providerName, instanceNam
 }
 
 // ChatToModelStreamWithSender streams chat response directly via sender function ( the best performance, no channel)
-func (m *ModelProviderService) ChatToModelStreamWithSender(providerName, instanceName, modelName, modelID *string, userID string, messages []modelModule.Message, apiConfig *modelModule.APIConfig, modelConfig *modelModule.ChatConfig, sender func(*string, *string) error) (common.ErrorCode, error) {
+func (m *ModelProviderService) ChatToModelStreamWithSender(providerName, instanceName, modelName, modelID *string, userID string, messages []modelModule.Message, apiConfig *modelModule.APIConfig, modelConfig *modelModule.ChatConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) (common.ErrorCode, error) {
 
 	var err error
 	var info *ModelInstanceAndProviderInfo
@@ -2187,7 +2693,11 @@ func (m *ModelProviderService) ChatToModelStreamWithSender(providerName, instanc
 		}
 	}
 
-	err = modelDriver.ChatStreamlyWithSender(resolvedModelName, messages, info.APIConfig, modelConfig, sender)
+	modelUsage.TenantID = info.ProviderEntity.TenantID
+	modelUsage.InstanceID = info.InstanceEntity.ID
+	modelUsage.APIKey = info.InstanceEntity.APIKey
+
+	err = modelDriver.ChatStreamlyWithSender(resolvedModelName, messages, info.APIConfig, modelConfig, modelUsage, sender)
 	if err != nil {
 		return common.CodeServerError, err
 	}
@@ -2279,7 +2789,7 @@ func (m *ModelProviderService) EmbedText(providerName, instanceName, modelName, 
 	}
 
 	var response []modelModule.EmbeddingData
-	response, err = modelDriver.Embed(&resolvedModelName, texts, info.APIConfig, modelConfig)
+	response, err = modelDriver.Embed(&resolvedModelName, texts, info.APIConfig, modelConfig, nil)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2341,7 +2851,7 @@ func (m *ModelProviderService) RerankDocument(providerName, instanceName, modelN
 	}
 
 	var response *modelModule.RerankResponse
-	response, err = modelDriver.Rerank(&resolvedModelName, query, documents, info.APIConfig, modelConfig)
+	response, err = modelDriver.Rerank(&resolvedModelName, query, documents, info.APIConfig, modelConfig, nil)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2395,7 +2905,7 @@ func (m *ModelProviderService) TranscribeAudio(providerName, instanceName, model
 	}
 
 	var response *modelModule.ASRResponse
-	response, err = modelDriver.TranscribeAudio(modelName, audioFile, apiConfig, modelConfig)
+	response, err = modelDriver.TranscribeAudio(modelName, audioFile, apiConfig, modelConfig, nil)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2451,7 +2961,7 @@ func (m *ModelProviderService) TranscribeAudioStream(providerName, instanceName,
 		}
 	}
 
-	err = modelDriver.TranscribeAudioWithSender(modelName, audioFile, apiConfig, modelConfig, sender)
+	err = modelDriver.TranscribeAudioWithSender(modelName, audioFile, apiConfig, modelConfig, nil, sender)
 	if err != nil {
 		return common.CodeServerError, err
 	}
@@ -2505,7 +3015,7 @@ func (m *ModelProviderService) AudioSpeech(providerName, instanceName, modelName
 	}
 
 	var response *modelModule.TTSResponse
-	response, err = modelDriver.AudioSpeech(modelName, audioContent, apiConfig, modelConfig)
+	response, err = modelDriver.AudioSpeech(modelName, audioContent, apiConfig, modelConfig, nil)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2560,7 +3070,7 @@ func (m *ModelProviderService) AudioSpeechStream(providerName, instanceName, mod
 		}
 	}
 
-	err = modelDriver.AudioSpeechWithSender(modelName, audioContent, apiConfig, modelConfig, sender)
+	err = modelDriver.AudioSpeechWithSender(modelName, audioContent, apiConfig, modelConfig, nil, sender)
 	if err != nil {
 		return common.CodeServerError, err
 	}
@@ -2613,7 +3123,7 @@ func (m *ModelProviderService) OCRFile(providerName, instanceName, modelName, mo
 	}
 
 	var response *modelModule.OCRFileResponse
-	response, err = modelDriver.OCRFile(modelName, content, url, apiConfig, modelConfig)
+	response, err = modelDriver.OCRFile(modelName, content, url, apiConfig, modelConfig, nil)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2668,7 +3178,7 @@ func (m *ModelProviderService) ParseFile(providerName, instanceName, modelName, 
 	}
 
 	var response *modelModule.ParseFileResponse
-	response, err = modelDriver.ParseFile(modelName, content, url, apiConfig, modelConfig)
+	response, err = modelDriver.ParseFile(modelName, content, url, apiConfig, modelConfig, nil)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -2847,9 +3357,9 @@ func defaultModelRefs(tenant *entity.Tenant, modelType entity.ModelType) (string
 	case entity.ModelTypeImage2Text:
 		return tenant.Img2TxtID, ptrStringValue(tenant.TenantImg2TxtID)
 	case entity.ModelTypeTTS:
-		return tenant.TTSID, ptrStringValue(tenant.TenantTTSID)
+		return *tenant.TTSID, ptrStringValue(tenant.TenantTTSID)
 	case entity.ModelTypeOCR:
-		return tenant.OCRID, ptrStringValue(tenant.TenantOCRID)
+		return *tenant.OCRID, ptrStringValue(tenant.TenantOCRID)
 	default:
 		return "", ""
 	}
@@ -2886,6 +3396,17 @@ func (m *ModelProviderService) ResolveModelID(tenantID string, modelType entity.
 	pureModelName, instanceName, providerName, err := parseModelName(modelName)
 	if err != nil {
 		return "", err
+	}
+
+	// Builtin provider: Builtin models (e.g. local TEI embeddings) have no
+	// tenant_model_instance records, so there is no tenant-scoped model ID to
+	// resolve.  Downstream resolution (ResolveModelConfig / getModelConfig)
+	// falls through to parseModelName → Builtin routing, which already works.
+	if providerName == "Builtin" && modelType == entity.ModelTypeEmbedding {
+		if builtinDriver := modelModule.GetBuiltinEmbeddingModel(pureModelName); builtinDriver == nil {
+			return "", fmt.Errorf("builtin embedding model %q not found", pureModelName)
+		}
+		return "", nil
 	}
 
 	provider, err := m.modelProviderDAO.GetByTenantIDAndProviderName(tenantID, providerName)

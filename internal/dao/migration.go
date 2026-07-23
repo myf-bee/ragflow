@@ -57,14 +57,9 @@ func RunMigrations(db *gorm.DB) error {
 		return fmt.Errorf("failed to modify column types: %w", err)
 	}
 
-	// Create skill search tables
-	if err := migrateSkillSearchTables(db); err != nil {
-		return fmt.Errorf("failed to migrate skill search tables: %w", err)
-	}
-
-	// Create skill space tables
-	if err := migrateSkillSpaceTables(db); err != nil {
-		return fmt.Errorf("failed to migrate skill space tables: %w", err)
+	// Add case-insensitive unique constraint on knowledgebase (tenant_id, name)
+	if err := migrateKnowledgebaseNameUnique(db); err != nil {
+		return fmt.Errorf("failed to add unique index on knowledgebase (tenant_id, name): %w", err)
 	}
 
 	common.Info("All manual migrations completed successfully")
@@ -92,7 +87,7 @@ func migrateTenantLLMPrimaryKey(db *gorm.DB) error {
 	if idColumnExists > 0 {
 		// Check if id is already a primary key with auto_increment
 		var count int64
-		err := db.Raw(`
+		err = db.Raw(`
 			SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
 			WHERE TABLE_NAME = 'tenant_llm'
 			AND COLUMN_NAME = 'id'
@@ -116,7 +111,7 @@ func migrateTenantLLMPrimaryKey(db *gorm.DB) error {
 		tx.Raw(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
 			WHERE TABLE_NAME = 'tenant_llm' AND COLUMN_NAME = 'temp_id'`).Scan(&tempIdExists)
 		if tempIdExists > 0 {
-			if err := tx.Exec("ALTER TABLE tenant_llm DROP COLUMN temp_id").Error; err != nil {
+			if err = tx.Exec("ALTER TABLE tenant_llm DROP COLUMN temp_id").Error; err != nil {
 				common.Warn("Failed to drop temp_id column", zap.Error(err))
 			}
 		}
@@ -124,7 +119,7 @@ func migrateTenantLLMPrimaryKey(db *gorm.DB) error {
 		// Check if there's already an 'id' column
 		if idColumnExists > 0 {
 			// Modify existing id column to be auto_increment primary key
-			if err := tx.Exec(`
+			if err = tx.Exec(`
 				ALTER TABLE tenant_llm
 				MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY
 			`).Error; err != nil {
@@ -132,7 +127,7 @@ func migrateTenantLLMPrimaryKey(db *gorm.DB) error {
 			}
 		} else {
 			// Add id column as auto_increment primary key
-			if err := tx.Exec(`
+			if err = tx.Exec(`
 				ALTER TABLE tenant_llm
 				ADD COLUMN id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST
 			`).Error; err != nil {
@@ -145,7 +140,7 @@ func migrateTenantLLMPrimaryKey(db *gorm.DB) error {
 		tx.Raw(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
 			WHERE TABLE_NAME = 'tenant_llm' AND INDEX_NAME = 'idx_tenant_llm_unique'`).Scan(&idxExists)
 		if idxExists == 0 {
-			if err := tx.Exec(`
+			if err = tx.Exec(`
 				ALTER TABLE tenant_llm
 				ADD UNIQUE INDEX idx_tenant_llm_unique (tenant_id, llm_factory, llm_name)
 			`).Error; err != nil {
@@ -263,9 +258,81 @@ func migrateIngestionTaskDocumentIDUnique(db *gorm.DB) error {
 	return nil
 }
 
+// migrateKnowledgebaseNameUnique adds a case-insensitive unique constraint on
+// (tenant_id, name) for valid knowledge bases. A VIRTUAL generated column
+// (name_ci) computes LOWER(name) only for status='1' rows and is NULL otherwise,
+// so soft-deleted rows never block name reuse. The unique index backstops the
+// check-then-write path in CreateDataset/UpdateDataset against concurrent
+// duplicate inserts, and the resulting duplicate-key error is mapped back to the
+// "already exists" domain error at the service layer.
+func migrateKnowledgebaseNameUnique(db *gorm.DB) error {
+	if !db.Migrator().HasTable("knowledgebase") {
+		return nil
+	}
+
+	// Add the generated column if it does not exist yet.
+	var colExists int64
+	if err := db.Raw(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledgebase' AND COLUMN_NAME = 'name_ci'`).Scan(&colExists).Error; err != nil {
+		return err
+	}
+	if colExists == 0 {
+		common.Info("Adding generated column name_ci to knowledgebase...")
+		if err := db.Exec(`ALTER TABLE knowledgebase
+			ADD COLUMN name_ci VARCHAR(128) GENERATED ALWAYS AS (
+				CASE WHEN status = '1' THEN LOWER(name) ELSE NULL END
+			) VIRTUAL`).Error; err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "Error 1060") && strings.Contains(errStr, "Duplicate column name") {
+				common.Info("Column name_ci already exists, skipping", zap.String("error", errStr))
+			} else {
+				return fmt.Errorf("failed to add generated column name_ci: %w", err)
+			}
+		}
+	}
+
+	const indexName = "idx_kb_tenant_name_ci"
+
+	// Check whether the unique index already exists.
+	var idxExists int64
+	if err := db.Raw(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'knowledgebase' AND INDEX_NAME = ?`, indexName).Scan(&idxExists).Error; err != nil {
+		return err
+	}
+	if idxExists > 0 {
+		return nil
+	}
+
+	// Check for duplicate valid names before adding the index.
+	var duplicateCount int64
+	if err := db.Raw(`
+		SELECT COUNT(*) FROM (
+			SELECT tenant_id, name_ci FROM knowledgebase
+			WHERE name_ci IS NOT NULL
+			GROUP BY tenant_id, name_ci HAVING COUNT(*) > 1
+		) AS duplicates
+	`).Scan(&duplicateCount).Error; err != nil {
+		return err
+	}
+	if duplicateCount > 0 {
+		return fmt.Errorf("found %d duplicate (tenant_id, name) pairs among valid knowledge bases; resolve these before the unique index can be created", duplicateCount)
+	}
+
+	common.Info("Adding unique index on knowledgebase (tenant_id, name_ci)...")
+	if err := db.Exec("ALTER TABLE knowledgebase ADD UNIQUE INDEX " + indexName + " (tenant_id, name_ci)").Error; err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "Error 1061") && strings.Contains(errStr, "Duplicate key name") {
+			common.Info("Index already exists, skipping", zap.String("error", errStr))
+			return nil
+		}
+		return fmt.Errorf("failed to add unique index on knowledgebase (tenant_id, name_ci): %w", err)
+	}
+
+	return nil
+}
+
 // modifyColumnTypes modifies column types that need explicit ALTER statements
 func modifyColumnTypes(db *gorm.DB) error {
-	// Helper function to check if column exists
 	columnExists := func(table, column string) bool {
 		var count int64
 		db.Raw(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
@@ -273,7 +340,7 @@ func modifyColumnTypes(db *gorm.DB) error {
 		return count > 0
 	}
 
-	// dialog.top_k: ensure it's INTEGER with default 1024
+	// dialog.top_k: ensure its INTEGER with default 1024
 	if db.Migrator().HasTable("dialog") && columnExists("dialog", "top_k") {
 		if err := db.Exec(`ALTER TABLE dialog MODIFY COLUMN top_k BIGINT NOT NULL DEFAULT 1024`).Error; err != nil {
 			common.Warn("Failed to modify dialog.top_k", zap.Error(err))
@@ -282,7 +349,7 @@ func modifyColumnTypes(db *gorm.DB) error {
 
 	// tenant_llm.api_key: ensure it's TEXT type
 	if db.Migrator().HasTable("tenant_llm") && columnExists("tenant_llm", "api_key") {
-		if err := db.Exec(`ALTER TABLE tenant_llm MODIFY COLUMN api_key LONGTEXT`).Error; err != nil {
+		if err := db.Exec(`ALTER TABLE tenant_llm MODIFY COLUMN api_key VARCHAR(8192)`).Error; err != nil {
 			common.Warn("Failed to modify tenant_llm.api_key", zap.Error(err))
 		}
 	}
