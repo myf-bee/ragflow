@@ -417,6 +417,8 @@ class ParserConfig(Base):
     html4excel: Annotated[bool, Field(default=False)]
     layout_recognize: Annotated[str, Field(default="DeepDOC")]
     parent_child: Annotated[ParentChildConfig, Field(default_factory=lambda: ParentChildConfig(use_parent_child=False))]
+    enable_children: Annotated[bool, Field(default=False)]
+    children_delimiter: Annotated[str, Field(default="", min_length=0)]
     raptor: Annotated[RaptorConfig, Field(default_factory=lambda: RaptorConfig(use_raptor=False))]
     tag_kb_ids: Annotated[list[str], Field(default_factory=list)]
     topn_tags: Annotated[int, Field(default=1, ge=1, le=10)]
@@ -617,13 +619,14 @@ class CreateDatasetReq(Base):
         Validation pipeline:
         1. Structural format verification
         2. Component non-empty check
-        3. Value normalization
+        3. Tenant model id passthrough
+        4. Value normalization
 
         Args:
             v (str): Raw model identifier
 
         Returns:
-            str: Validated <model_name>@<provider> format
+            str: Validated <model_name>@<provider> format or tenant_model id
 
         Raises:
             PydanticCustomError: For these violations:
@@ -633,11 +636,15 @@ class CreateDatasetReq(Base):
 
         Examples:
             Valid: "text-embedding-3-large@openai"
+            Valid: "2f3c0f9c7b1d11f0a1b2c3d4e5f67890"  # tenant_model.id
             Invalid: "invalid_model" (no @)
             Invalid: "@openai" (empty model_name)
             Invalid: "text-embedding-3-large@" (empty provider)
         """
         if isinstance(v, str):
+            if re.fullmatch(r"[0-9a-fA-F]{32}", v):
+                return v
+
             if "@" not in v:
                 raise PydanticCustomError("format_invalid", "Embedding model identifier must follow <model_name>@<provider> format")
 
@@ -942,7 +949,7 @@ class SearchDatasetReq(BaseModel):
     keyword: Annotated[bool, Field(default=False)]
     search_id: Annotated[str | None, Field(default=None)]
     rerank_id: Annotated[str | None, Field(default=None)]
-    tenant_rerank_id: Annotated[int | None, Field(default=None)]
+    tenant_rerank_id: Annotated[str | None, Field(default=None)]
     meta_data_filter: Annotated[dict | None, Field(default=None)]
 
 
@@ -964,7 +971,7 @@ class SearchDatasetsReq(BaseModel):
     keyword: Annotated[bool, Field(default=False)]
     search_id: Annotated[str | None, Field(default=None)]
     rerank_id: Annotated[str | None, Field(default=None)]
-    tenant_rerank_id: Annotated[int | None, Field(default=None)]
+    tenant_rerank_id: Annotated[str | None, Field(default=None)]
     meta_data_filter: Annotated[dict | None, Field(default=None)]
 
 

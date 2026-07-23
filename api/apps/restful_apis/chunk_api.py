@@ -27,7 +27,7 @@ from quart import request
 from api.apps import login_required
 from api.db.joint_services.tenant_model_service import (
     split_model_name,
-    get_model_config_from_provider_instance,
+    resolve_model_config,
     get_tenant_default_model_by_type,
 )
 from api.db.db_models import Document, Task
@@ -166,10 +166,7 @@ def _get_dataset_tenant_id(dataset_id):
 def _compilation_template_kind(kind) -> str:
     if not isinstance(kind, str):
         return ""
-    normalized = kind.strip().lower().replace("-", "_")
-    if normalized in {"pageindex", "page_index", "knowledge_graph"}:
-        return "timeline"
-    return normalized
+    return kind.strip().lower().replace("-", "_")
 
 
 def _resolve_reference_metadata(req: dict, search_config: dict | None = None):
@@ -374,12 +371,12 @@ async def retrieval_test(tenant_id):
         e, kb = KnowledgebaseService.get_by_id(kb_ids[0])
         if not e:
             return get_error_data_result(message="Dataset not found!")
-        embd_model_config = get_model_config_from_provider_instance(kb.tenant_id, LLMType.EMBEDDING, kb.embd_id)
+        embd_model_config = resolve_model_config(kb.tenant_id, LLMType.EMBEDDING, kb.embd_id)
         embd_mdl = LLMBundle(kb.tenant_id, embd_model_config)
 
         rerank_mdl = None
         if req.get("rerank_id"):
-            rerank_model_config = get_model_config_from_provider_instance(kb.tenant_id, LLMType.RERANK, req["rerank_id"])
+            rerank_model_config = resolve_model_config(kb.tenant_id, LLMType.RERANK, req["rerank_id"])
             rerank_mdl = LLMBundle(kb.tenant_id, rerank_model_config)
 
         if langs:
@@ -581,6 +578,7 @@ async def get_document_structure_graph(tenant_id, dataset_id, document_id):
     """
     from rag.nlp import search
     from api.db.services.compilation_template_group_service import CompilationTemplateGroupService
+    from api.db.services.compilation_template_service import CompilationTemplateService
 
     if not KnowledgebaseService.accessible(kb_id=dataset_id, user_id=tenant_id):
         return get_error_data_result(message=f"You don't own the dataset {dataset_id}.")
@@ -624,6 +622,7 @@ async def get_document_structure_graph(tenant_id, dataset_id, document_id):
     seen_configured_ids: set[str] = set()
     template_meta: dict[str, dict] = {}
     template_meta_by_kind: dict[str, list[dict]] = {}
+    template_meta_by_id: dict[str, dict] = {}
     for group_id in group_ids:
         group = CompilationTemplateGroupService.get_saved(group_id, tenant_id)
         if not group:
@@ -648,6 +647,7 @@ async def get_document_structure_graph(tenant_id, dataset_id, document_id):
                 "kind_norm": kind_norm,
             }
             template_meta[template_id] = meta
+            template_meta_by_id[template_id] = meta
             template_meta_by_kind.setdefault(kind_norm, []).append(meta)
 
     # Load every graph row for this doc in one shot. Each row corresponds
@@ -740,6 +740,24 @@ async def get_document_structure_graph(tenant_id, dataset_id, document_id):
             bucket_id = tid
             row_kind_norm = _compilation_template_kind(kind_val)
             meta = template_meta.get(bucket_id)
+            if not meta:
+                # Pipeline Compiler receives template groups as component
+                # parameters and does not persist those group ids in the
+                # document parser_config. Resolve the exact template id
+                # directly so Pipeline-produced rows do not fall back to
+                # exposing the opaque id as the display name.
+                if bucket_id not in template_meta_by_id:
+                    saved_template = CompilationTemplateService.get_saved(bucket_id, tenant_id)
+                    if saved_template:
+                        template_meta_by_id[bucket_id] = {
+                            "template_id": bucket_id,
+                            "template_name": saved_template.get("name") or bucket_id,
+                            "kind": saved_template.get("kind") or kind_val,
+                            "kind_norm": _compilation_template_kind(saved_template.get("kind")),
+                        }
+                    else:
+                        template_meta_by_id[bucket_id] = {}
+                meta = template_meta_by_id[bucket_id] or None
             if not meta:
                 kind_matches = template_meta_by_kind.get(row_kind_norm) or []
                 if len(kind_matches) == 1:
@@ -902,7 +920,7 @@ async def add_chunk(tenant_id, dataset_id, document_id):
         d["doc_type_kwd"] = "image"
 
     embd_id = DocumentService.get_embd_id(document_id)
-    model_config = get_model_config_from_provider_instance(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)
+    model_config = resolve_model_config(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)
     embd_mdl = TenantLLMService.model_instance(model_config)
     v, c = embd_mdl.encode([doc.name, req["content"] if not d["question_kwd"] else "\n".join(d["question_kwd"])])
     v = 0.1 * v[0] + 0.9 * v[1]
@@ -1048,7 +1066,7 @@ async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
         d["doc_type_kwd"] = "image"
 
     embd_id = DocumentService.get_embd_id(document_id)
-    model_config = get_model_config_from_provider_instance(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)
+    model_config = resolve_model_config(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)
     embd_mdl = TenantLLMService.model_instance(model_config)
     if doc.parser_id == ParserType.QA:
         arr = [t for t in re.split(r"[\n\t]", d["content_with_weight"]) if len(t) > 1]

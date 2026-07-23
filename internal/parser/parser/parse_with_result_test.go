@@ -43,12 +43,10 @@ import (
 // rule. A blank-line-separated input yields one item per
 // paragraph; the python TxtParser does the same.
 func TestTextParser_ParseWithResult_ParaSplit(t *testing.T) {
-	p, err := NewTextParser("")
-	if err != nil {
-		t.Fatalf("NewTextParser: %v", err)
-	}
+	p := NewTextParser()
 	src := []byte("First paragraph.\n\nSecond paragraph.\n\nThird.")
-	res := p.ParseWithResult("doc.txt", src)
+	ctx := t.Context()
+	res := p.ParseWithResult(ctx, "doc.txt", src)
 	if res.Err != nil {
 		t.Fatalf("ParseWithResult: %v", res.Err)
 	}
@@ -74,8 +72,9 @@ func TestTextParser_ParseWithResult_ParaSplit(t *testing.T) {
 // sees a non-nil JSON slice. Mirrors the MarkdownParser convention
 // at markdown_parser.go:71-76.
 func TestTextParser_ParseWithResult_Empty(t *testing.T) {
-	p, _ := NewTextParser("")
-	res := p.ParseWithResult("empty.txt", []byte{})
+	ctx := t.Context()
+	p := NewTextParser()
+	res := p.ParseWithResult(ctx, "empty.txt", []byte{})
 	if res.Err != nil {
 		t.Fatalf("ParseWithResult: %v", res.Err)
 	}
@@ -88,9 +87,10 @@ func TestTextParser_ParseWithResult_Empty(t *testing.T) {
 // maxItemBytes boundary behaviour. A single paragraph longer
 // than 8192 bytes is sliced at the nearest line boundary.
 func TestTextParser_ParseWithResult_LongParagraphSlicing(t *testing.T) {
-	p, _ := NewTextParser("")
+	ctx := t.Context()
+	p := NewTextParser()
 	long := strings.Repeat("a", 9000)
-	res := p.ParseWithResult("long.txt", []byte(long))
+	res := p.ParseWithResult(ctx, "long.txt", []byte(long))
 	if res.Err != nil {
 		t.Fatalf("ParseWithResult: %v", res.Err)
 	}
@@ -108,9 +108,10 @@ func TestTextParser_ParseWithResult_LongParagraphSlicing(t *testing.T) {
 // validation rule. Invalid bytes produce an error in the result
 // (matching the python TxtParser's behaviour).
 func TestTextParser_ParseWithResult_InvalidUTF8(t *testing.T) {
-	p, _ := NewTextParser("")
+	ctx := t.Context()
+	p := NewTextParser()
 	bad := []byte{0xff, 0xfe, 0xfd}
-	res := p.ParseWithResult("bad.txt", bad)
+	res := p.ParseWithResult(ctx, "bad.txt", bad)
 	if res.Err == nil {
 		t.Fatal("want error for invalid UTF-8, got nil")
 	}
@@ -120,16 +121,14 @@ func TestTextParser_ParseWithResult_InvalidUTF8(t *testing.T) {
 // Three block elements (heading, paragraph, list) yield three
 // items with the python-compatible ck_type vocabulary.
 func TestHTMLParser_ParseWithResult_BlockSplit(t *testing.T) {
-	p, err := NewHTMLParser(Official)
-	if err != nil {
-		t.Fatalf("NewHTMLParser: %v", err)
-	}
+	ctx := t.Context()
+	p := NewHTMLParser()
 	src := []byte(`<!DOCTYPE html><html><body>
 <h1>Title</h1>
 <p>First paragraph.</p>
 <ul><li>Item one</li></ul>
 </body></html>`)
-	res := p.ParseWithResult("doc.html", src)
+	res := p.ParseWithResult(ctx, "doc.html", src)
 	if res.Err != nil {
 		t.Fatalf("ParseWithResult: %v", res.Err)
 	}
@@ -163,14 +162,15 @@ func TestHTMLParser_ParseWithResult_BlockSplit(t *testing.T) {
 // rule that <script> / <style> subtrees are skipped entirely so
 // they don't pollute the downstream chunker input.
 func TestHTMLParser_ParseWithResult_SkipsScriptAndStyle(t *testing.T) {
-	p, _ := NewHTMLParser(Official)
+	ctx := t.Context()
+	p := NewHTMLParser()
 	src := []byte(`<html><body>
 <p>Visible.</p>
 <script>alert("x")</script>
 <style>body { color: red; }</style>
 <p>Also visible.</p>
 </body></html>`)
-	res := p.ParseWithResult("doc.html", src)
+	res := p.ParseWithResult(ctx, "doc.html", src)
 	if res.Err != nil {
 		t.Fatalf("ParseWithResult: %v", res.Err)
 	}
@@ -189,7 +189,7 @@ func TestHTMLParser_ParseWithResult_SkipsScriptAndStyle(t *testing.T) {
 // `utility.FileTypeTXT` resolves to a TextParser that satisfies
 // ParseResultProducer.
 func TestGetParser_RoutesTextAndCode(t *testing.T) {
-	p, err := GetParser(utility.FileTypeTXT, map[string]string{"lib_type": ""})
+	p, err := GetParser(utility.FileTypeTXT)
 	if err != nil {
 		t.Fatalf("GetParser(FileTypeTXT): %v", err)
 	}

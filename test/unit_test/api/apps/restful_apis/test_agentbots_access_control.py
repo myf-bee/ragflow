@@ -11,7 +11,7 @@
 #  distributed under the License is distributed on an "AS IS" BASIS,
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
-#  limitations under the License.
+#  limitations under the License.  test ci unit_test
 #
 """Regression tests for cross-tenant access control on the SDK agent-bot routes
 (`api/apps/restful_apis/bot_api.py`).
@@ -90,7 +90,13 @@ def _load_bot_api(monkeypatch, *, accessible, calls):
         TenantService=SimpleNamespace(),
         UserTenantService=SimpleNamespace(),
     )
-    _stub(monkeypatch, "api.db.joint_services.tenant_model_service", get_tenant_default_model_by_type=lambda *_a, **_k: None, get_model_config_from_provider_instance=lambda *_a, **_k: None)
+    _stub(
+        monkeypatch,
+        "api.db.joint_services.tenant_model_service",
+        get_tenant_default_model_by_type=lambda *_a, **_k: None,
+        get_model_config_from_provider_instance=lambda *_a, **_k: None,
+        resolve_model_config=lambda *_a, **_k: None,
+    )
     _stub(monkeypatch, "common.misc_utils", get_uuid=lambda: "uuid", thread_pool_exec=_passthrough_thread_pool_exec)
     _stub(
         monkeypatch,

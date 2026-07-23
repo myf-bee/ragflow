@@ -17,20 +17,19 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"ragflow/internal/common"
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
+	"ragflow/internal/utility"
 	"strings"
-
-	"gorm.io/gorm"
 )
 
 // SearchService search service
 type SearchService struct {
 	searchDAO     *dao.SearchDAO
 	userTenantDAO *dao.UserTenantDAO
+	datasetDAO    *dao.KnowledgebaseDAO
 	tenantService *TenantService
 }
 
@@ -39,6 +38,7 @@ func NewSearchService() *SearchService {
 	return &SearchService{
 		searchDAO:     dao.NewSearchDAO(),
 		userTenantDAO: dao.NewUserTenantDAO(),
+		datasetDAO:    dao.NewKnowledgebaseDAO(),
 		tenantService: NewTenantService(),
 	}
 }
@@ -80,7 +80,7 @@ type SearchShareDetail struct {
 
 // ListSearches list search apps with advanced filtering (equivalent to list_search_app)
 func (s *SearchService) ListSearches(userID string, keywords string, page, pageSize int, orderby string, desc bool, ownerIDs []string) (*ListSearchAppsResponse, error) {
-	var searches []*entity.Search
+	var searches []*entity.SearchListItem
 	var total int64
 	var err error
 
@@ -115,7 +115,7 @@ func (s *SearchService) ListSearches(userID string, keywords string, page, pageS
 				}
 				searches = searches[start:end]
 			} else {
-				searches = []*entity.Search{}
+				searches = []*entity.SearchListItem{}
 			}
 		}
 	}
@@ -166,7 +166,7 @@ func (s *SearchService) filterAccessibleSearchOwnerIDs(userID string, ownerIDs [
 }
 
 // toSearchAppResponse converts search model to response format
-func (s *SearchService) toSearchAppResponse(search *entity.Search) map[string]interface{} {
+func (s *SearchService) toSearchAppResponse(search *entity.SearchListItem) map[string]interface{} {
 	result := map[string]interface{}{
 		"id":            search.ID,
 		"tenant_id":     search.TenantID,
@@ -177,16 +177,15 @@ func (s *SearchService) toSearchAppResponse(search *entity.Search) map[string]in
 		"create_time":   search.CreateTime,
 		"update_time":   search.UpdateTime,
 		"search_config": map[string]interface{}(search.SearchConfig),
+		"nickname":      ownerNickname(search.Nickname, search.TenantID),
 	}
 
 	if search.Avatar != nil {
 		result["avatar"] = *search.Avatar
 	}
-
-	// Add joined fields from user table
-	// Note: These fields are populated by the DAO query with Select clause
-	// but GORM will map them to the model's embedded fields if available
-	// We need to handle the extra fields manually
+	if search.TenantAvatar != nil {
+		result["tenant_avatar"] = *search.TenantAvatar
+	}
 
 	return result
 }
@@ -208,8 +207,12 @@ type CreateSearchResponse struct {
 // 6. Save to database within DB.atomic() transaction
 // 7. Return {search_id: id} on success
 func (s *SearchService) CreateSearch(userID string, name string, description *string) (*CreateSearchResponse, error) {
+	if err := common.ValidateName(name); err != nil {
+		return nil, err
+	}
+
 	// Generate UUID for search ID (same as Python get_uuid())
-	searchID := common.GenerateUUID()
+	searchID := utility.GenerateUUID()
 
 	// Generate unique name (same as Python duplicate_name)
 	uniqueName, err := common.DuplicateName(func(name string, tid string) bool {
@@ -325,7 +328,7 @@ func (s *SearchService) DeleteSearch(userID string, searchID string) error {
 
 	// Step 2: Execute delete (same as Python SearchService.delete_by_id)
 	// Python: cls.model.delete().where(cls.model.id == pid).execute()
-	if err = s.searchDAO.DeleteByID(searchID); err != nil {
+	if err = s.searchDAO.DeleteByID(userID, searchID); err != nil {
 		return fmt.Errorf("failed to delete search App %s: %w", searchID, err)
 	}
 
@@ -334,23 +337,16 @@ func (s *SearchService) DeleteSearch(userID string, searchID string) error {
 
 // AccessibleForCompletion check if it is accessible
 func (s *SearchService) AccessibleForCompletion(userID string, searchID string) (bool, error) {
-	ok, err := s.searchDAO.Accessible4Deletion(searchID, userID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return ok, nil
+	return s.searchDAO.Accessible4Deletion(searchID, userID)
 }
 
 type SearchCompletionPlan struct {
-	UserID   string
-	SearchID string
-	Question string
-	KBIDs    []string
-	ModelID  string
-	Options  AskStreamOptions
+	UserID     string
+	SearchID   string
+	Question   string
+	DatasetIDs []string
+	ModelID    string
+	Options    AskStreamOptions
 }
 
 func (s *SearchService) PrepareCompletion(userID, searchID string, req *SearchCompletionsRequest) (*SearchCompletionPlan, common.ErrorCode, error) {
@@ -375,21 +371,28 @@ func (s *SearchService) PrepareCompletion(userID, searchID string, req *SearchCo
 		return nil, common.CodeServerError, err
 	}
 	if !accessible {
-		return nil, common.CodeAuthenticationError, fmt.Errorf("No authorization.")
+		return nil, common.CodeAuthenticationError, fmt.Errorf("no authorization")
 	}
 
 	searchDetail, err := s.GetDetail(searchID)
 	if err != nil || searchDetail == nil {
-		return nil, common.CodeDataError, fmt.Errorf("Cannot find search %s", searchID)
+		return nil, common.CodeDataError, fmt.Errorf("cannot find search %s", searchID)
 	}
 	searchConfig := searchConfigMapFromValue(searchDetail["search_config"])
 
-	kbIDs := stringSliceFromSearchConfig(searchConfig["kb_ids"])
-	if len(kbIDs) == 0 {
-		kbIDs = stringSliceFromSearchConfig(req.KBIDs)
+	datasetIDs := stringSliceFromSearchConfig(searchConfig["kb_ids"])
+	if len(datasetIDs) == 0 {
+		datasetIDs = stringSliceFromSearchConfig(req.KBIDs)
 	}
-	if len(kbIDs) == 0 {
-		return nil, common.CodeDataError, fmt.Errorf("`kb_ids` is required.")
+	if len(datasetIDs) == 0 {
+		return nil, common.CodeDataError, fmt.Errorf("`kb_ids` is required")
+	}
+
+	for _, datasetID := range datasetIDs {
+		accessible = s.datasetDAO.Accessible(datasetID, userID)
+		if !accessible {
+			return nil, common.CodeAuthenticationError, fmt.Errorf("no authorization for dataset %s", datasetID)
+		}
 	}
 
 	modelID, _ := stringFromSearchConfig(searchConfig["chat_id"])
@@ -398,19 +401,20 @@ func (s *SearchService) PrepareCompletion(userID, searchID string, req *SearchCo
 		if tenantSvc == nil {
 			tenantSvc = NewTenantService()
 		}
-		defaultModel, err := tenantSvc.GetDefaultModelName(userID, entity.ModelTypeChat)
+		var defaultModelName string
+		defaultModelName, err = tenantSvc.GetDefaultModelName(userID, entity.ModelTypeChat)
 		if err == nil {
-			modelID = strings.TrimSpace(defaultModel)
+			modelID = strings.TrimSpace(defaultModelName)
 		}
 	}
 
 	return &SearchCompletionPlan{
-		UserID:   userID,
-		SearchID: searchID,
-		Question: question,
-		KBIDs:    kbIDs,
-		ModelID:  modelID,
-		Options:  askOptionsFromSearchConfig(searchID, searchConfig),
+		UserID:     userID,
+		SearchID:   searchID,
+		Question:   question,
+		DatasetIDs: datasetIDs,
+		ModelID:    modelID,
+		Options:    askOptionsFromSearchConfig(searchID, searchConfig),
 	}, common.CodeSuccess, nil
 }
 
@@ -550,14 +554,14 @@ type UpdateSearchRequest struct {
 
 func (s *SearchService) UpdateSearch(userID string, searchID string, req *UpdateSearchRequest) (*entity.Search, error) {
 	// Step 1: Check update permission (same as delete - uses accessible4deletion)
-	// Only creator can update
+	// Only creator can update. A missing or non-owned search is treated as
+	// unauthorized so the contract returns a clear "no authorization" error.
 
-	status, err := s.searchDAO.Accessible4Deletion(searchID, userID)
+	accessible, err := s.searchDAO.Accessible4Deletion(searchID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check deletion permission: %w", err)
 	}
-
-	if !status {
+	if !accessible {
 		return nil, fmt.Errorf("no authorization")
 	}
 

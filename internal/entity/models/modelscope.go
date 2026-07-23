@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"ragflow/internal/common"
 	"strings"
 	"sync"
 	"time"
@@ -50,7 +51,7 @@ type modelscopeChatResponse struct {
 }
 
 type modelscopeModelListResponse struct {
-	Data []DSModel `json:"data"`
+	Data []ModelListItem `json:"data"`
 }
 
 // NewModelScopeModel creates a new ModelScope model instance.
@@ -70,7 +71,7 @@ func (m *ModelScopeModel) NewInstance(baseURL map[string]string) ModelDriver {
 }
 
 func (m *ModelScopeModel) Name() string {
-	return "modelscope"
+	return "ModelScope"
 }
 
 func normalizeModelScopeBaseURL(base string) string {
@@ -140,7 +141,7 @@ func buildModelScopeChatBody(modelName string, messages []Message, stream bool, 
 }
 
 // ChatWithMessages sends multiple messages with roles and returns the response.
-func (m *ModelScopeModel) ChatWithMessages(modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig) (*ChatResponse, error) {
+func (m *ModelScopeModel) ChatWithMessages(ctx context.Context, modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, modelUsage *common.ModelUsage) (*ChatResponse, error) {
 	if err := m.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
@@ -162,7 +163,7 @@ func (m *ModelScopeModel) ChatWithMessages(modelName string, messages []Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), nonStreamCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
@@ -210,7 +211,7 @@ func (m *ModelScopeModel) ChatWithMessages(modelName string, messages []Message,
 }
 
 // ChatStreamlyWithSender sends messages and streams response via sender.
-func (m *ModelScopeModel) ChatStreamlyWithSender(modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, sender func(*string, *string) error) error {
+func (m *ModelScopeModel) ChatStreamlyWithSender(ctx context.Context, modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
 	if err := m.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return err
 	}
@@ -330,41 +331,41 @@ func (m *ModelScopeModel) ChatStreamlyWithSender(modelName string, messages []Me
 	return sender(&endOfStream, nil)
 }
 
-func (m *ModelScopeModel) Embed(modelName *string, texts []string, apiConfig *APIConfig, embeddingConfig *EmbeddingConfig) ([]EmbeddingData, error) {
+func (m *ModelScopeModel) Embed(ctx context.Context, modelName *string, texts []string, apiConfig *APIConfig, embeddingConfig *EmbeddingConfig, modelUsage *common.ModelUsage) ([]EmbeddingData, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) Rerank(modelName *string, query string, documents []string, apiConfig *APIConfig, rerankConfig *RerankConfig) (*RerankResponse, error) {
+func (m *ModelScopeModel) Rerank(ctx context.Context, modelName *string, query string, documents []string, apiConfig *APIConfig, rerankConfig *RerankConfig, modelUsage *common.ModelUsage) (*RerankResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) TranscribeAudio(modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig) (*ASRResponse, error) {
+func (m *ModelScopeModel) TranscribeAudio(ctx context.Context, modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, modelUsage *common.ModelUsage) (*ASRResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) TranscribeAudioWithSender(modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, sender func(*string, *string) error) error {
+func (m *ModelScopeModel) TranscribeAudioWithSender(ctx context.Context, modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
 	return fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) AudioSpeech(modelName *string, audioContent *string, apiConfig *APIConfig, asrConfig *TTSConfig) (*TTSResponse, error) {
+func (m *ModelScopeModel) AudioSpeech(ctx context.Context, modelName *string, audioContent *string, apiConfig *APIConfig, asrConfig *TTSConfig, modelUsage *common.ModelUsage) (*TTSResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) AudioSpeechWithSender(modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, sender func(*string, *string) error) error {
+func (m *ModelScopeModel) AudioSpeechWithSender(ctx context.Context, modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
 	return fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) OCRFile(modelName *string, content []byte, url *string, apiConfig *APIConfig, ocrConfig *OCRConfig) (*OCRFileResponse, error) {
+func (m *ModelScopeModel) OCRFile(ctx context.Context, modelName *string, content []byte, url *string, apiConfig *APIConfig, ocrConfig *OCRConfig, modelUsage *common.ModelUsage) (*OCRFileResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) ParseFile(modelName *string, content []byte, url *string, apiConfig *APIConfig, parseFileConfig *ParseFileConfig) (*ParseFileResponse, error) {
+func (m *ModelScopeModel) ParseFile(ctx context.Context, modelName *string, content []byte, url *string, apiConfig *APIConfig, parseFileConfig *ParseFileConfig, modelUsage *common.ModelUsage) (*ParseFileResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
 // ListModels returns the model IDs exposed by ModelScope's OpenAI-compatible
 // /v1/models endpoint.
-func (m *ModelScopeModel) ListModels(apiConfig *APIConfig) ([]ListModelResponse, error) {
+func (m *ModelScopeModel) ListModels(ctx context.Context, apiConfig *APIConfig) ([]ListModelResponse, error) {
 	if err := m.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
@@ -376,7 +377,7 @@ func (m *ModelScopeModel) ListModels(apiConfig *APIConfig) ([]ListModelResponse,
 	baseURL = normalizeModelScopeBaseURL(baseURL)
 	url := fmt.Sprintf("%s/%s", baseURL, m.baseModel.URLSuffix.Models)
 
-	ctx, cancel := context.WithTimeout(context.Background(), nonStreamCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -411,19 +412,19 @@ func (m *ModelScopeModel) ListModels(apiConfig *APIConfig) ([]ListModelResponse,
 	return ParseListModel(ModelList{Models: result.Data}), nil
 }
 
-func (m *ModelScopeModel) Balance(apiConfig *APIConfig) (map[string]interface{}, error) {
+func (m *ModelScopeModel) Balance(ctx context.Context, apiConfig *APIConfig) (map[string]interface{}, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) CheckConnection(apiConfig *APIConfig) error {
-	_, err := m.ListModels(apiConfig)
+func (m *ModelScopeModel) CheckConnection(ctx context.Context, apiConfig *APIConfig) error {
+	_, err := m.ListModels(ctx, apiConfig)
 	return err
 }
 
-func (m *ModelScopeModel) ListTasks(apiConfig *APIConfig) ([]ListTaskStatus, error) {
+func (m *ModelScopeModel) ListTasks(ctx context.Context, apiConfig *APIConfig) ([]ListTaskStatus, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }
 
-func (m *ModelScopeModel) ShowTask(taskID string, apiConfig *APIConfig) (*TaskResponse, error) {
+func (m *ModelScopeModel) ShowTask(ctx context.Context, taskID string, apiConfig *APIConfig) (*TaskResponse, error) {
 	return nil, fmt.Errorf("%s, no such method", m.Name())
 }

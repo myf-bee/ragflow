@@ -1,3 +1,4 @@
+//test web ci 3
 const { fontFamily } = require('tailwindcss/defaultTheme');
 
 /** @type {import('tailwindcss').Config} */
@@ -243,5 +244,6 @@ module.exports = {
     require('@tailwindcss/line-clamp'),
     require('tailwind-scrollbar'),
     require('@tailwindcss/container-queries'),
+    require('@tailwindcss/typography'),
   ],
 };

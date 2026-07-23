@@ -20,17 +20,20 @@ import (
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
 	"ragflow/internal/utility"
+	"time"
 )
 
 // APIKeyResponse key response
 type APIKeyResponse struct {
-	TenantID   string  `json:"tenant_id"`
-	Token      string  `json:"token"`
-	DialogID   *string `json:"dialog_id,omitempty"`
-	Source     *string `json:"source,omitempty"`
-	Beta       *string `json:"beta,omitempty"`
-	CreateTime *int64  `json:"create_time,omitempty"`
-	UpdateTime *int64  `json:"update_time,omitempty"`
+	TenantID   string     `json:"tenant_id"`
+	Token      string     `json:"token"`
+	DialogID   *string    `json:"dialog_id,omitempty"`
+	Source     *string    `json:"source,omitempty"`
+	Beta       *string    `json:"beta,omitempty"`
+	CreateTime *int64     `json:"create_time,omitempty"`
+	CreateDate *time.Time `json:"create_date,omitempty"`
+	UpdateTime *int64     `json:"update_time,omitempty"`
+	UpdateDate *time.Time `json:"update_date,omitempty"`
 }
 
 // ListAPIKeys list all API keys for a tenant
@@ -45,7 +48,7 @@ func (s *SystemService) ListAPIKeys(tenantID string) ([]*APIKeyResponse, error) 
 	for i, key := range keys {
 		beta := key.Beta
 		if beta == nil || *beta == "" {
-			generatedBeta := utility.GenerateBetaAPIToken(utility.GenerateAPIToken())
+			generatedBeta := utility.GenerateBetaAPIToken()
 			if err = dao.DB.Model(&entity.APIToken{}).
 				Where("tenant_id = ? AND token = ?", tenantID, key.Token).
 				Updates(map[string]interface{}{
@@ -64,7 +67,9 @@ func (s *SystemService) ListAPIKeys(tenantID string) ([]*APIKeyResponse, error) 
 			Source:     key.Source,
 			Beta:       beta,
 			CreateTime: key.CreateTime,
+			CreateDate: key.CreateDate,
 			UpdateTime: key.UpdateTime,
+			UpdateDate: key.UpdateDate,
 		}
 	}
 
@@ -84,7 +89,7 @@ func (s *SystemService) CreateAPIKey(tenantID string, req *CreateAPIKeyRequest) 
 	// key: "ragflow-" + secrets.token_urlsafe(32)
 	APIToken := utility.GenerateAPIToken()
 	// beta: generate_confirmation_token().replace("ragflow-", "")[:32]
-	betaAPIKey := utility.GenerateBetaAPIToken(utility.GenerateAPIToken())
+	betaAPIKey := utility.GenerateBetaAPIToken()
 
 	APIKeyData := &entity.APIToken{
 		TenantID: tenantID,
@@ -103,7 +108,9 @@ func (s *SystemService) CreateAPIKey(tenantID string, req *CreateAPIKeyRequest) 
 		Source:     APIKeyData.Source,
 		Beta:       APIKeyData.Beta,
 		CreateTime: APIKeyData.CreateTime,
+		CreateDate: APIKeyData.CreateDate,
 		UpdateTime: APIKeyData.UpdateTime,
+		UpdateDate: APIKeyData.UpdateDate,
 	}, nil
 }
 

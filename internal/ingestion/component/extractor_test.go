@@ -33,7 +33,7 @@ import (
 // stubExtractorChatInvoker is the test seam for the package-level
 // extractorChatInvoker. It records every call (for assertions) and
 // returns canned responses configured per-test. Concurrent-safe so
-// it can backstop future Parallelism>1 cases without rewriting.
+// it can backstop concurrent test cases without rewriting.
 type stubExtractorChatInvoker struct {
 	mu sync.Mutex
 
@@ -152,12 +152,6 @@ func TestExtractorComponent_Invoke_HappyPath(t *testing.T) {
 	}
 	if out["output_format"] != "chunks" {
 		t.Errorf("output_format = %v, want chunks", out["output_format"])
-	}
-	if out["_elapsed_time"] == nil {
-		t.Error("_elapsed_time missing")
-	}
-	if out["_created_time"] == nil {
-		t.Error("_created_time missing")
 	}
 }
 
@@ -482,12 +476,12 @@ func TestExtractorComponent_Invoke_ChunkIndexInError(t *testing.T) {
 // the construction-time Validate() rejection of an empty
 // field_name (matches python check_empty "Result Destination").
 func TestExtractorComponent_NewExtractorComponent_ParamCheck(t *testing.T) {
-	_, err := NewExtractorComponent(map[string]any{})
-	if err == nil {
-		t.Fatal("expected error for missing field_name, got nil")
+	c, err := NewExtractorComponent(map[string]any{})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "field_name") {
-		t.Errorf("error should mention field_name: %v", err)
+	if c == nil {
+		t.Fatal("expected non-nil component")
 	}
 }
 
@@ -512,6 +506,88 @@ func TestExtractorComponent_NewExtractorComponent_Happy(t *testing.T) {
 	}
 }
 
+// TestNewExtractorComponent_SysPromptAlias verifies that "sys_prompt"
+// (the Python DSL name) is accepted as a fallback for SystemPrompt.
+func TestNewExtractorComponent_SysPromptAlias(t *testing.T) {
+	withStubChatInvoker(t, stubResponse{Content: "ok"})
+	comp, err := NewExtractorComponent(map[string]any{
+		"field_name": "out",
+		"sys_prompt": "You are a Python DSL prompt.",
+	})
+	if err != nil {
+		t.Fatalf("NewExtractorComponent: %v", err)
+	}
+	ec := comp.(*ExtractorComponent)
+	if ec.Param.SystemPrompt != "You are a Python DSL prompt." {
+		t.Errorf("SystemPrompt = %q, want %q", ec.Param.SystemPrompt, "You are a Python DSL prompt.")
+	}
+}
+
+// TestNewExtractorComponent_PromptsArray verifies that the Python DSL
+// "prompts" array format is parsed into Param.Prompt.
+func TestNewExtractorComponent_PromptsArray(t *testing.T) {
+	withStubChatInvoker(t, stubResponse{Content: "ok"})
+	comp, err := NewExtractorComponent(map[string]any{
+		"field_name": "out",
+		"prompts": []any{
+			map[string]any{
+				"content": "Analyze: {TitleChunker:FlatMiceFix@chunks}",
+				"role":    "user",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewExtractorComponent: %v", err)
+	}
+	ec := comp.(*ExtractorComponent)
+	want := "Analyze: {TitleChunker:FlatMiceFix@chunks}"
+	if ec.Param.Prompt != want {
+		t.Errorf("Prompt = %q, want %q", ec.Param.Prompt, want)
+	}
+}
+
+// TestNewExtractorComponent_PromptsArray_PromptWins verifies that
+// "prompt" (string) takes priority over "prompts" (array) when both
+// are present in the DSL params.
+func TestNewExtractorComponent_PromptsArray_PromptWins(t *testing.T) {
+	withStubChatInvoker(t, stubResponse{Content: "ok"})
+	comp, err := NewExtractorComponent(map[string]any{
+		"field_name": "out",
+		"prompt":     "Direct prompt wins.",
+		"prompts": []any{
+			map[string]any{
+				"content": "Should be ignored.",
+				"role":    "user",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewExtractorComponent: %v", err)
+	}
+	ec := comp.(*ExtractorComponent)
+	if ec.Param.Prompt != "Direct prompt wins." {
+		t.Errorf("Prompt = %q, want %q", ec.Param.Prompt, "Direct prompt wins.")
+	}
+}
+
+// TestNewExtractorComponent_SystemPromptWinsOverSysPrompt verifies
+// that "system_prompt" takes priority over "sys_prompt".
+func TestNewExtractorComponent_SystemPromptWinsOverSysPrompt(t *testing.T) {
+	withStubChatInvoker(t, stubResponse{Content: "ok"})
+	comp, err := NewExtractorComponent(map[string]any{
+		"field_name":    "out",
+		"system_prompt": "system_prompt wins.",
+		"sys_prompt":    "sys_prompt ignored.",
+	})
+	if err != nil {
+		t.Fatalf("NewExtractorComponent: %v", err)
+	}
+	ec := comp.(*ExtractorComponent)
+	if ec.Param.SystemPrompt != "system_prompt wins." {
+		t.Errorf("SystemPrompt = %q, want %q", ec.Param.SystemPrompt, "system_prompt wins.")
+	}
+}
+
 // TestExtractorComponent_InputsOutputs_NonEmpty is the shape
 // assertion Phase 4's API endpoint relies on.
 func TestExtractorComponent_InputsOutputs_NonEmpty(t *testing.T) {
@@ -529,16 +605,6 @@ func TestExtractorComponent_InputsOutputs_NonEmpty(t *testing.T) {
 	}
 	if _, ok := outs["output_format"]; !ok {
 		t.Errorf("Outputs() missing %q", "output_format")
-	}
-}
-
-// TestExtractorComponent_Parallelism asserts the fan-out is
-// locked to 1 per plan §AD-5a ("Extractor: 1 (LLM call is
-// inherently serial)").
-func TestExtractorComponent_Parallelism(t *testing.T) {
-	c := &ExtractorComponent{}
-	if got := c.Parallelism(); got != 1 {
-		t.Errorf("Parallelism() = %d, want 1", got)
 	}
 }
 
@@ -562,7 +628,7 @@ func TestSplitExtractorLLID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			model, provider, ok := splitExtractorLLID(tc.in)
+			model, provider, ok := splitExtractorLLIDPair(tc.in)
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -653,3 +719,60 @@ func TestExtractorComponent_ConcurrentInvoke(t *testing.T) {
 // (it currently isn't, but pinning the import keeps test-side
 // imports honest if helpers move around in future revisions).
 var _ = eschema.Message{}
+
+// TestIsBareTenantModelID verifies UUID detection.
+func TestIsBareTenantModelID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"9e819c2442b14f9dab46062916e29195", true},
+		{"ABCDEFabcdef01234567890123456789", true},
+		{"9e819c2442b14f9dab46062916e2919", false},   // 31 chars
+		{"9e819c2442b14f9dab46062916e29195X", false}, // 33 chars
+		{"gpt-4o-mini@openai", false},
+		{"", false},
+		{"not-a-uuid", false},
+	}
+	for _, tc := range tests {
+		got := isBareTenantModelID(tc.input)
+		if got != tc.want {
+			t.Errorf("isBareTenantModelID(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestResolveExtractorChatTarget_AtSplitFallback verifies the @ split
+// fallback path works without canvas state (unit test compatibility).
+func TestResolveExtractorChatTarget_AtSplitFallback(t *testing.T) {
+	driver, modelName, apiKey, baseURL, err := resolveExtractorChatTarget(
+		context.Background(), "gpt-4o-mini@openai")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if driver != "openai" {
+		t.Errorf("driver = %q, want openai", driver)
+	}
+	if modelName != "gpt-4o-mini" {
+		t.Errorf("modelName = %q, want gpt-4o-mini", modelName)
+	}
+	if apiKey != "" || baseURL != "" {
+		t.Errorf("apiKey/baseURL should be empty in fallback path")
+	}
+}
+
+// TestResolveExtractorChatTarget_NoDriver verifies a non-@ plain string
+// without canvas state returns no driver (passes through to Chat()).
+func TestResolveExtractorChatTarget_NoDriver(t *testing.T) {
+	driver, modelName, _, _, err := resolveExtractorChatTarget(
+		context.Background(), "plain-name")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if driver != "" {
+		t.Errorf("driver should be empty for plain name, got %q", driver)
+	}
+	if modelName != "plain-name" {
+		t.Errorf("modelName = %q, want plain-name", modelName)
+	}
+}

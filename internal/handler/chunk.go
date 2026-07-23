@@ -16,6 +16,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ type chunkService interface {
 	UpdateChunk(req *service.UpdateChunkRequest, userID string) error
 	RemoveChunks(req *service.RemoveChunksRequest, userID string) (int64, error)
 	Parse(userID, datasetID string, req *service.ParseFileRequest) (map[string]interface{}, common.ErrorCode, error)
-	AddChunk(req *service.AddChunkRequest, userID string) (*service.AddChunkResponse, error)
+	AddChunk(ctx context.Context, req *service.AddChunkRequest, userID string) (*service.AddChunkResponse, error)
 	StopParsing(userID, datasetID string, req service.StopParsingRequest) (*service.StopParsingResponse, common.ErrorCode, error)
 }
 
@@ -69,7 +70,7 @@ func NewChunkHandler(chunkService chunkService, userService *service.UserService
 func (h *ChunkHandler) RetrievalTest(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -149,7 +150,7 @@ func (h *ChunkHandler) RetrievalTest(c *gin.Context) {
 func (h *ChunkHandler) Get(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -176,7 +177,7 @@ func (h *ChunkHandler) Get(c *gin.Context) {
 func (h *ChunkHandler) Parse(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -210,7 +211,7 @@ func (h *ChunkHandler) Parse(c *gin.Context) {
 func (h *ChunkHandler) ListChunks(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -285,7 +286,7 @@ func parseAvailableQuery(raw string) (int, bool, error) {
 func (h *ChunkHandler) StopParsing(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -339,7 +340,7 @@ func (h *ChunkHandler) StopParsing(c *gin.Context) {
 func (h *ChunkHandler) List(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -373,7 +374,7 @@ func (h *ChunkHandler) List(c *gin.Context) {
 func (h *ChunkHandler) SwitchChunks(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -490,7 +491,7 @@ func parseAvailableBody(rawBody map[string]interface{}) (int, error) {
 func (h *ChunkHandler) UpdateChunk(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -589,10 +590,6 @@ func (h *ChunkHandler) UpdateChunk(c *gin.Context) {
 			switch coded.Code() {
 			case common.CodeArgumentError, common.CodeBadRequest, common.CodeDataError:
 				common.ResponseWithHttpCodeData(c, http.StatusBadRequest, coded.Code(), nil, err.Error())
-				c.JSON(http.StatusBadRequest, gin.H{
-					"code":    coded.Code(),
-					"message": err.Error(),
-				})
 				return
 			}
 		}
@@ -616,7 +613,7 @@ func (h *ChunkHandler) UpdateChunk(c *gin.Context) {
 func (h *ChunkHandler) RemoveChunks(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -702,9 +699,10 @@ func addChunkResponseMessage(code common.ErrorCode, err error) string {
 }
 
 func (h *ChunkHandler) AddChunk(c *gin.Context) {
+	ctx := c.Request.Context()
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
@@ -760,7 +758,7 @@ func (h *ChunkHandler) AddChunk(c *gin.Context) {
 		ImageBase64:       imageBase64,
 	}
 
-	resp, err := h.chunkService.AddChunk(&req, userID)
+	resp, err := h.chunkService.AddChunk(ctx, &req, userID)
 	if err != nil {
 		var codedErr service.ErrorCoder
 		if errors.As(err, &codedErr) {

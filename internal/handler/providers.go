@@ -25,6 +25,7 @@ import (
 	"ragflow/internal/entity/models"
 	"ragflow/internal/service"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -58,7 +59,7 @@ func (h *ProviderHandler) ListProviders(c *gin.Context) {
 		// list pool providers
 		providers, err := dao.GetModelProviderManager().ListProviders()
 		if err != nil {
-			common.ErrorWithCode(c, int(common.CodeNotFound), err.Error())
+			common.ErrorWithCode(c, common.CodeNotFound, err.Error())
 			return
 		}
 
@@ -100,7 +101,7 @@ func (h *ProviderHandler) AddProvider(c *gin.Context) {
 
 	errorCode, err := h.modelProviderService.AddModelProvider(req.ProviderName, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -118,7 +119,7 @@ func (h *ProviderHandler) DeleteProvider(c *gin.Context) {
 
 	errorCode, err := h.modelProviderService.DeleteModelProvider(userID, providerName)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -134,7 +135,7 @@ func (h *ProviderHandler) ShowProvider(c *gin.Context) {
 
 	provider, err := dao.GetModelProviderManager().GetProviderByName(providerName)
 	if err != nil {
-		common.ErrorWithCode(c, int(common.CodeNotFound), err.Error())
+		common.ErrorWithCode(c, common.CodeNotFound, err.Error())
 		return
 	}
 	common.SuccessWithData(c, provider, "success")
@@ -148,7 +149,7 @@ func (h *ProviderHandler) ListModels(c *gin.Context) {
 	}
 	providerModels, err := dao.GetModelProviderManager().ListModels(providerName)
 	if err != nil {
-		common.ErrorWithCode(c, int(common.CodeNotFound), err.Error())
+		common.ErrorWithCode(c, common.CodeNotFound, err.Error())
 		return
 	}
 	common.SuccessWithData(c, providerModels, "success")
@@ -167,7 +168,7 @@ func (h *ProviderHandler) ShowModel(c *gin.Context) {
 	}
 	model, err := dao.GetModelProviderManager().GetModelByName(providerName, modelName)
 	if err != nil {
-		common.ErrorWithCode(c, int(common.CodeNotFound), err.Error())
+		common.ErrorWithCode(c, common.CodeNotFound, err.Error())
 		return
 	}
 
@@ -175,10 +176,11 @@ func (h *ProviderHandler) ShowModel(c *gin.Context) {
 }
 
 type CreateProviderInstanceRequest struct {
-	InstanceName string `json:"instance_name" binding:"required"`
-	APIKey       string `json:"api_key"`
-	BaseURL      string `json:"base_url"`
-	Region       string `json:"region"`
+	InstanceName string                            `json:"instance_name" binding:"required"`
+	APIKey       string                            `json:"api_key"`
+	BaseURL      string                            `json:"base_url"`
+	Region       string                            `json:"region"`
+	ModelInfo    []service.CreateInstanceModelInfo `json:"model_info"`
 }
 
 func (h *ProviderHandler) CreateProviderInstance(c *gin.Context) {
@@ -188,17 +190,31 @@ func (h *ProviderHandler) CreateProviderInstance(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
 	var req CreateProviderInstanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
 	userID := c.GetString("user_id")
 
-	_, err := h.modelProviderService.CreateProviderInstance(providerName, req.InstanceName, req.APIKey, req.BaseURL, req.Region, userID)
+	// If the request body only contains "instance_name", create a name-only
+	// instance without API key validation or model creation.
+	// Mirrors Python's provider_api.py:349 — set(data.keys()) == {"instance_name"}.
+	if req.APIKey == "" && req.BaseURL == "" && req.Region == "" && len(req.ModelInfo) == 0 {
+		code, err := h.modelProviderService.CreateNameOnlyProviderInstance(providerName, req.InstanceName, userID)
+		if err != nil {
+			common.ErrorWithCode(c, code, err.Error())
+			return
+		}
+		common.SuccessWithMessage(c, "success")
+		return
+	}
+
+	_, err := h.modelProviderService.CreateProviderInstance(ctx, providerName, req.InstanceName, req.APIKey, req.BaseURL, req.Region, userID, req.ModelInfo)
 	if err != nil {
-		common.ErrorWithCode(c, int(common.CodeServerError), err.Error())
+		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
 
@@ -216,7 +232,7 @@ func (h *ProviderHandler) ListProviderInstances(c *gin.Context) {
 
 	instances, errorCode, err := h.modelProviderService.ListProviderInstances(providerName, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -230,18 +246,17 @@ func (h *ProviderHandler) ShowProviderInstance(c *gin.Context) {
 		return
 	}
 
-	instanceName := c.Param("instance_name")
-	if instanceName == "" {
+	instanceIDOrName := c.Param("instance_name")
+	if instanceIDOrName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Instance name is required")
 		return
 	}
 
 	userID := c.GetString("user_id")
 
-	// Get tenant ID from user
-	instance, errorCode, err := h.modelProviderService.ShowProviderInstance(providerName, instanceName, userID)
+	instance, errorCode, err := h.modelProviderService.ShowProviderInstance(providerName, instanceIDOrName, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -262,11 +277,12 @@ func (h *ProviderHandler) ShowInstanceBalance(c *gin.Context) {
 	}
 
 	userID := c.GetString("user_id")
+	ctx := c.Request.Context()
 
 	// Get tenant ID from user
-	balance, errorCode, err := h.modelProviderService.ShowInstanceBalance(providerName, instanceName, userID)
+	balance, errorCode, err := h.modelProviderService.ShowInstanceBalance(ctx, providerName, instanceName, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -280,6 +296,7 @@ func (h *ProviderHandler) CheckConnection(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
 	var req service.CheckConnectionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, err.Error())
@@ -287,9 +304,9 @@ func (h *ProviderHandler) CheckConnection(c *gin.Context) {
 	}
 
 	userID := c.GetString("user_id")
-	errCode, err := h.modelProviderService.CheckConnection(providerName, req.APIKey, req.Region, req.BaseURL, userID)
+	errCode, err := h.modelProviderService.CheckConnection(ctx, providerName, req.APIKey, req.Region, req.BaseURL, req.InstanceID, userID, service.ListModelNames(req.ModelInfo))
 	if err != nil {
-		common.ErrorWithCode(c, int(errCode), err.Error())
+		common.ErrorWithCode(c, errCode, err.Error())
 		return
 	}
 
@@ -297,6 +314,7 @@ func (h *ProviderHandler) CheckConnection(c *gin.Context) {
 }
 
 func (h *ProviderHandler) CheckInstanceConnection(c *gin.Context) {
+	ctx := c.Request.Context()
 	providerName := c.Param("provider_name")
 	if providerName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Provider name is required")
@@ -313,18 +331,18 @@ func (h *ProviderHandler) CheckInstanceConnection(c *gin.Context) {
 
 	instanceInfo, code, err := h.modelProviderService.ShowProviderInstance(providerName, instanceName, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 
 	apikey, _ := instanceInfo["api_key"].(string)
 	region, _ := instanceInfo["region"].(string)
 	baseURL, _ := instanceInfo["base_url"].(string)
+	instanceID, _ := instanceInfo["id"].(string)
 
-	// Get tenant ID from user
-	errorCode, err := h.modelProviderService.CheckConnection(providerName, apikey, region, baseURL, userID)
+	errorCode, err := h.modelProviderService.CheckConnection(ctx, providerName, apikey, region, baseURL, instanceID, userID, nil)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -332,6 +350,7 @@ func (h *ProviderHandler) CheckInstanceConnection(c *gin.Context) {
 }
 
 func (h *ProviderHandler) ListTasks(c *gin.Context) {
+	ctx := c.Request.Context()
 	providerName := c.Param("provider_name")
 	if providerName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Provider name is required")
@@ -347,9 +366,9 @@ func (h *ProviderHandler) ListTasks(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	// Get tenant ID from user
-	listTaskResponse, errorCode, err := h.modelProviderService.ListTasks(providerName, instanceName, userID)
+	listTaskResponse, errorCode, err := h.modelProviderService.ListTasks(ctx, providerName, instanceName, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -357,6 +376,7 @@ func (h *ProviderHandler) ListTasks(c *gin.Context) {
 }
 
 func (h *ProviderHandler) ShowTask(c *gin.Context) {
+	ctx := c.Request.Context()
 	providerName := c.Param("provider_name")
 	if providerName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Provider name is required")
@@ -378,9 +398,9 @@ func (h *ProviderHandler) ShowTask(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	// Get tenant ID from user
-	taskResponse, errorCode, err := h.modelProviderService.ShowTask(providerName, instanceName, taskID, userID)
+	taskResponse, errorCode, err := h.modelProviderService.ShowTask(ctx, providerName, instanceName, taskID, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -388,11 +408,16 @@ func (h *ProviderHandler) ShowTask(c *gin.Context) {
 }
 
 type AlterProviderInstanceRequest struct {
-	InstanceName string `json:"instance_name"`
-	APIKey       string `json:"api_key"`
+	InstanceName string                            `json:"instance_name"`
+	APIKey       string                            `json:"api_key"`
+	BaseURL      string                            `json:"base_url"`
+	Region       string                            `json:"region"`
+	ModelInfo    []service.CreateInstanceModelInfo `json:"model_info"`
+	Verify       *bool                             `json:"verify"`
 }
 
 func (h *ProviderHandler) AlterProviderInstance(c *gin.Context) {
+	ctx := c.Request.Context()
 	providerName := c.Param("provider_name")
 	if providerName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Provider name is required")
@@ -413,13 +438,18 @@ func (h *ProviderHandler) AlterProviderInstance(c *gin.Context) {
 
 	userID := c.GetString("user_id")
 	if userID == "" {
-		common.ErrorWithCode(c, int(common.CodeUnauthorized), "Unauthorized")
+		common.ErrorWithCode(c, common.CodeUnauthorized, "Unauthorized")
 		return
 	}
 
-	code, err := h.modelProviderService.AlterProviderInstance(userID, providerName, instanceName, req.InstanceName, req.APIKey)
+	verify := true
+	if req.Verify != nil {
+		verify = *req.Verify
+	}
+
+	code, err := h.modelProviderService.AlterProviderInstance(ctx, userID, providerName, instanceName, req.InstanceName, req.APIKey, req.BaseURL, req.Region, req.ModelInfo, verify)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 
@@ -438,7 +468,7 @@ func (h *ProviderHandler) DropProviderInstance(c *gin.Context) {
 	}
 	var req DropProviderInstanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -446,7 +476,7 @@ func (h *ProviderHandler) DropProviderInstance(c *gin.Context) {
 
 	code, err := h.modelProviderService.DropProviderInstances(providerName, userID, req.Instances)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 
@@ -454,6 +484,7 @@ func (h *ProviderHandler) DropProviderInstance(c *gin.Context) {
 }
 
 func (h *ProviderHandler) ListInstanceModels(c *gin.Context) {
+	ctx := c.Request.Context()
 	providerName := c.Param("provider_name")
 	if providerName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Provider name is required")
@@ -475,9 +506,9 @@ func (h *ProviderHandler) ListInstanceModels(c *gin.Context) {
 	if keywords == "true" {
 		// list supported models
 
-		modelList, err := h.modelProviderService.ListSupportedModels(providerName, instanceName, c.GetString("user_id"))
+		modelList, err := h.modelProviderService.ListSupportedModels(ctx, providerName, instanceName, c.GetString("user_id"))
 		if err != nil {
-			common.ErrorWithCode(c, int(common.CodeServerError), err.Error())
+			common.ErrorWithCode(c, common.CodeServerError, err.Error())
 			return
 		}
 
@@ -487,18 +518,21 @@ func (h *ProviderHandler) ListInstanceModels(c *gin.Context) {
 
 	modelInstances, err := h.modelProviderService.ListInstanceModels(providerName, instanceName, c.GetString("user_id"))
 	if err != nil {
-		common.ErrorWithCode(c, int(common.CodeNotFound), err.Error())
+		common.ErrorWithCode(c, common.CodeNotFound, err.Error())
 		return
 	}
 	common.SuccessWithData(c, modelInstances, "success")
 }
 
-type EnableOrDisableModelRequest struct {
-	ModelID string `json:"model_id"`
-	Status  string `json:"status"`
+type AlterModelRequest struct {
+	ModelID   string      `json:"model_id"`
+	Status    string      `json:"status"`
+	MaxTokens int         `json:"max_tokens"`
+	ModelType interface{} `json:"model_type"`
+	Extra     interface{} `json:"extra"`
 }
 
-func (h *ProviderHandler) EnableOrDisableModel(c *gin.Context) {
+func (h *ProviderHandler) AlterModel(c *gin.Context) {
 	providerName := c.Param("provider_name")
 	if providerName == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, 400, nil, "Provider name is required")
@@ -511,31 +545,50 @@ func (h *ProviderHandler) EnableOrDisableModel(c *gin.Context) {
 		return
 	}
 
-	var req EnableOrDisableModelRequest
+	var req AlterModelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
 	userID := c.GetString("user_id")
-	modelID := strings.TrimSpace(req.ModelID)
 	modelName := strings.TrimPrefix(c.Param("model_name"), "/")
 	modelName = strings.TrimSpace(modelName)
+	modelID := strings.TrimSpace(req.ModelID)
+
 	if modelName == "" && modelID == "" {
 		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "model_name or model_id is required")
 		return
 	}
 
 	status := strings.TrimSpace(req.Status)
-	if status != "active" && status != "inactive" {
-		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "Status must be active or inactive")
+	if status != "" && status != "active" && status != "inactive" {
+		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "status must be 'active' or 'inactive'")
 		return
 	}
 
-	code, err := h.modelProviderService.UpdateModelStatus(providerName, instanceName, modelName, userID, modelID, status)
+	updateDict := make(map[string]interface{})
+	if status != "" {
+		updateDict["status"] = status
+	}
+	if req.MaxTokens > 0 {
+		updateDict["max_tokens"] = req.MaxTokens
+	}
+	if req.ModelType != nil {
+		updateDict["model_type"] = req.ModelType
+	}
+	if req.Extra != nil {
+		updateDict["extra"] = req.Extra
+	}
+
+	if len(updateDict) == 0 {
+		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "at least one update field is required besides model_name or model_id")
+		return
+	}
+
+	code, err := h.modelProviderService.AlterModel(providerName, instanceName, modelName, userID, modelID, updateDict)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 
@@ -562,30 +615,6 @@ func prepareProviderInstance(providerName, instanceName, reqProviderName, reqIns
 	return nil
 }
 
-func prepareAddModelRequest(req *service.AddModelRequest, providerName, instanceName string) error {
-	if err := prepareProviderInstance(providerName, instanceName, req.ProviderName, req.InstanceName); err != nil {
-		return err
-	}
-
-	if len(req.Models) == 0 {
-		return errors.New("Models are required")
-	}
-
-	for _, model := range req.Models {
-		if model.ModelName == "" {
-			return errors.New("Model name is required")
-		}
-
-		if len(model.ModelTypes) == 0 {
-			return errors.New("Model type is required")
-		}
-	}
-
-	req.ProviderName = providerName
-	req.InstanceName = instanceName
-	return nil
-}
-
 func (h *ProviderHandler) AddModel(c *gin.Context) {
 	var req service.AddModelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -594,8 +623,21 @@ func (h *ProviderHandler) AddModel(c *gin.Context) {
 		return
 	}
 
-	if err := prepareAddModelRequest(&req, c.Param("provider_name"), c.Param("instance_name")); err != nil {
-		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeDataError, nil, err.Error())
+	req.ProviderName = c.Param("provider_name")
+	req.InstanceName = c.Param("instance_name")
+
+	if req.ProviderName == "" || req.InstanceName == "" {
+		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "provider_name and instance_name are required")
+		return
+	}
+
+	if req.ModelName == "" {
+		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "model_name is required")
+		return
+	}
+
+	if len(req.ModelTypes) == 0 {
+		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "model_type is required")
 		return
 	}
 
@@ -603,16 +645,15 @@ func (h *ProviderHandler) AddModel(c *gin.Context) {
 
 	code, err := h.modelProviderService.AddModel(&req, userID)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 
-	common.ErrorWithCode(c, int(code), "success")
+	common.ErrorWithCode(c, code, "success")
 }
 
 type DropInstanceModelRequest struct {
-	ModelIDs []string `json:"model_ids"`
-	Models   []string `json:"models"`
+	ModelNames []string `json:"model_name"`
 }
 
 func (h *ProviderHandler) DropInstanceModels(c *gin.Context) {
@@ -629,19 +670,19 @@ func (h *ProviderHandler) DropInstanceModels(c *gin.Context) {
 
 	var req DropInstanceModelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
-	if len(req.ModelIDs) == 0 && len(req.Models) == 0 {
-		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "model_ids or models is required")
+	if len(req.ModelNames) == 0 {
+		common.ResponseWithHttpCodeData(c, http.StatusBadRequest, common.CodeBadRequest, nil, "model_name is required")
 		return
 	}
 
 	userID := c.GetString("user_id")
 
-	code, err := h.modelProviderService.DropInstanceModels(providerName, instanceName, userID, req.ModelIDs, req.Models)
+	code, err := h.modelProviderService.DropInstanceModels(providerName, instanceName, userID, req.ModelNames)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 
@@ -661,10 +702,11 @@ type ChatToModelRequest struct {
 }
 
 func (h *ProviderHandler) ChatToModel(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req ChatToModelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -690,8 +732,6 @@ func (h *ProviderHandler) ChatToModel(c *gin.Context) {
 		}
 	}
 
-	userID := c.GetString("user_id")
-
 	if !req.Thinking {
 		req.Effort = nil
 		req.Verbosity = nil
@@ -715,6 +755,16 @@ func (h *ProviderHandler) ChatToModel(c *gin.Context) {
 		Verbosity:   req.Verbosity,
 	}
 
+	userID := c.GetString("user_id")
+	email := c.GetString("email")
+	modelUsage := common.ModelUsage{
+		UserID:       userID,
+		UserEmail:    email,
+		ProviderName: *req.ProviderName,
+		ModelName:    *req.ModelName,
+		Type:         "chat",
+		StartAt:      time.Now(),
+	}
 	// Check if it's a stream request
 	if req.Stream {
 		// Set SSE headers
@@ -757,7 +807,19 @@ func (h *ProviderHandler) ChatToModel(c *gin.Context) {
 		}
 
 		// Stream response using sender function (the best performance, no channel)
-		errorCode, err := h.modelProviderService.ChatToModelStreamWithSender(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, messages, &apiConfig, &chatConfig, sender)
+		errorCode, err := h.modelProviderService.ChatToModelStreamWithSender(
+			ctx,
+			req.ProviderName,
+			req.InstanceName,
+			req.ModelName,
+			req.ModelID,
+			userID,
+			messages,
+			&apiConfig,
+			&chatConfig,
+			&modelUsage,
+			sender,
+		)
 
 		if errorCode != common.CodeSuccess {
 			c.SSEvent("error", err.Error())
@@ -777,10 +839,21 @@ func (h *ProviderHandler) ChatToModel(c *gin.Context) {
 		content := msg["content"]
 		messages[i] = models.Message{Role: role, Content: content}
 	}
-	response, errorCode, err = h.modelProviderService.ChatToModelWithMessages(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, messages, &apiConfig, &chatConfig)
+	response, errorCode, err = h.modelProviderService.ChatToModelWithMessages(
+		ctx,
+		req.ProviderName,
+		req.InstanceName,
+		req.ModelName,
+		req.ModelID,
+		userID,
+		messages,
+		&apiConfig,
+		&chatConfig,
+		&modelUsage,
+	)
 
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -788,6 +861,7 @@ func (h *ProviderHandler) ChatToModel(c *gin.Context) {
 		"code":              0,
 		"reasoning_content": response.ReasonContent,
 		"answer":            response.Answer,
+		"usage":             response.Usage,
 	})
 }
 
@@ -801,10 +875,11 @@ type EmbedTextRequest struct {
 }
 
 func (h *ProviderHandler) EmbedText(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req EmbedTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -846,9 +921,9 @@ func (h *ProviderHandler) EmbedText(c *gin.Context) {
 	var errorCode common.ErrorCode
 	var err error
 
-	response, errorCode, err = h.modelProviderService.EmbedText(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Texts, &apiConfig, &embeddingConfig)
+	response, errorCode, err = h.modelProviderService.EmbedText(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Texts, &apiConfig, &embeddingConfig)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -866,10 +941,11 @@ type RerankDocumentRequest struct {
 }
 
 func (h *ProviderHandler) RerankDocument(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req RerankDocumentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -911,9 +987,9 @@ func (h *ProviderHandler) RerankDocument(c *gin.Context) {
 	var errorCode common.ErrorCode
 	var err error
 
-	response, errorCode, err = h.modelProviderService.RerankDocument(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Query, req.Documents, &apiConfig, &rerankConfig)
+	response, errorCode, err = h.modelProviderService.RerankDocument(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Query, req.Documents, &apiConfig, &rerankConfig)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 	common.SuccessWithData(c, response.Data, "success")
@@ -932,10 +1008,11 @@ type TranscribeAudioRequest struct {
 }
 
 func (h *ProviderHandler) TranscribeAudio(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req TranscribeAudioRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -1007,7 +1084,7 @@ func (h *ProviderHandler) TranscribeAudio(c *gin.Context) {
 		}
 
 		// Stream response using sender function ( the best performance, no channel)
-		errorCode, err := h.modelProviderService.TranscribeAudioStream(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.File, &apiConfig, &asrConfig, sender)
+		errorCode, err := h.modelProviderService.TranscribeAudioStream(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.File, &apiConfig, &asrConfig, sender)
 		if errorCode != common.CodeSuccess {
 			c.SSEvent("error", err.Error())
 		}
@@ -1019,9 +1096,9 @@ func (h *ProviderHandler) TranscribeAudio(c *gin.Context) {
 	var errorCode common.ErrorCode
 	var err error
 
-	response, errorCode, err = h.modelProviderService.TranscribeAudio(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.File, &apiConfig, &asrConfig)
+	response, errorCode, err = h.modelProviderService.TranscribeAudio(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.File, &apiConfig, &asrConfig)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -1039,10 +1116,11 @@ type AudioSpeechRequest struct {
 }
 
 func (h *ProviderHandler) AudioSpeech(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req AudioSpeechRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -1114,7 +1192,7 @@ func (h *ProviderHandler) AudioSpeech(c *gin.Context) {
 		}
 
 		// Stream response using sender function ( the best performance, no channel)
-		errorCode, err := h.modelProviderService.AudioSpeechStream(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Text, &apiConfig, &ttsConfig, sender)
+		errorCode, err := h.modelProviderService.AudioSpeechStream(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Text, &apiConfig, &ttsConfig, sender)
 		if errorCode != common.CodeSuccess {
 			c.SSEvent("error", err.Error())
 		}
@@ -1126,9 +1204,9 @@ func (h *ProviderHandler) AudioSpeech(c *gin.Context) {
 	var errorCode common.ErrorCode
 	var err error
 
-	response, errorCode, err = h.modelProviderService.AudioSpeech(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Text, &apiConfig, &ttsConfig)
+	response, errorCode, err = h.modelProviderService.AudioSpeech(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Text, &apiConfig, &ttsConfig)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -1145,10 +1223,11 @@ type OCRFileRequest struct {
 }
 
 func (h *ProviderHandler) OCRFile(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req OCRFileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -1188,9 +1267,9 @@ func (h *ProviderHandler) OCRFile(c *gin.Context) {
 	var errorCode common.ErrorCode
 	var err error
 
-	response, errorCode, err = h.modelProviderService.OCRFile(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Content, req.URL, &apiConfig, &OCRConfig)
+	response, errorCode, err = h.modelProviderService.OCRFile(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Content, req.URL, &apiConfig, &OCRConfig)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -1207,10 +1286,11 @@ type ParseFileRequest struct {
 }
 
 func (h *ProviderHandler) ParseFile(c *gin.Context) {
+	ctx := c.Request.Context()
 	var req ParseFileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		println("JSON bind error: %v (type: %T)", err, err)
-		common.ErrorWithCode(c, int(common.CodeBadRequest), err.Error())
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
@@ -1250,9 +1330,9 @@ func (h *ProviderHandler) ParseFile(c *gin.Context) {
 	var errorCode common.ErrorCode
 	var err error
 
-	response, errorCode, err = h.modelProviderService.ParseFile(req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Content, req.URL, &apiConfig, &parseFileConfig)
+	response, errorCode, err = h.modelProviderService.ParseFile(ctx, req.ProviderName, req.InstanceName, req.ModelName, req.ModelID, userID, req.Content, req.URL, &apiConfig, &parseFileConfig)
 	if err != nil {
-		common.ErrorWithCode(c, int(errorCode), err.Error())
+		common.ErrorWithCode(c, errorCode, err.Error())
 		return
 	}
 
@@ -1277,15 +1357,16 @@ func (h *ProviderHandler) ParseFile(c *gin.Context) {
 func (h *ProviderHandler) ListTenantAddedModels(c *gin.Context) {
 	user, errorCode, errorMessage := GetUser(c)
 	if errorCode != common.CodeSuccess {
-		common.ErrorWithCode(c, int(errorCode), errorMessage)
+		common.ErrorWithCode(c, errorCode, errorMessage)
 		return
 	}
 
 	modelType := c.Query("type")
+	ownerTenantID := c.Query("owner_tenant_id")
 
-	addedModels, code, err := h.modelProviderService.ListTenantAddedModels(user.ID, modelType)
+	addedModels, code, err := h.modelProviderService.ListTenantAddedModels(user.ID, ownerTenantID, modelType)
 	if err != nil {
-		common.ErrorWithCode(c, int(code), err.Error())
+		common.ErrorWithCode(c, code, err.Error())
 		return
 	}
 

@@ -22,10 +22,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
+	modelModule "ragflow/internal/entity/models"
 	"ragflow/internal/storage"
+	"ragflow/internal/utility"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +34,6 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"github.com/google/uuid"
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
 )
@@ -59,6 +59,10 @@ type chatPipelineRunner interface {
 	AsyncChat(ctx context.Context, userID string, chat *entity.Chat, messages []map[string]interface{}, stream bool, kwargs map[string]interface{}) (<-chan AsyncChatResult, error)
 }
 
+type chatModelConfigResolver interface {
+	GetChatModelConfig(tenantID, llmID string) (modelModule.ModelDriver, string, *modelModule.APIConfig, int, error)
+}
+
 // chunkFeedbackApplier is the dispatch seam for chunk-level feedback
 // persistence. Mirrors the Python ChunkFeedbackService.apply_feedback
 // (api/db/services/chunk_feedback_service.py) call site at
@@ -81,6 +85,7 @@ type ChatSessionService struct {
 	chatSessionDAO       chatSessionStore
 	userTenantDAO        userTenantStore
 	pipeline             chatPipelineRunner
+	modelProviderSvc     chatModelConfigResolver
 	chunkFeedbackApplier chunkFeedbackApplier
 	docEngine            engine.DocEngine
 }
@@ -88,10 +93,11 @@ type ChatSessionService struct {
 // NewChatSessionService create chat session service
 func NewChatSessionService() *ChatSessionService {
 	return &ChatSessionService{
-		chatSessionDAO: dao.NewChatSessionDAO(),
-		userTenantDAO:  dao.NewUserTenantDAO(),
-		pipeline:       NewChatPipelineService(),
-		docEngine:      engine.Get(),
+		chatSessionDAO:   dao.NewChatSessionDAO(),
+		userTenantDAO:    dao.NewUserTenantDAO(),
+		pipeline:         NewChatPipelineService(),
+		modelProviderSvc: NewModelProviderService(),
+		docEngine:        engine.Get(),
 	}
 }
 
@@ -154,7 +160,7 @@ func (s *ChatSessionService) SetChatSession(userID string, req *SetChatSessionRe
 	referenceJSON, _ := json.Marshal([]interface{}{})
 
 	session := &entity.ChatSession{
-		ID:        common.GenerateUUID(),
+		ID:        utility.GenerateUUID(),
 		DialogID:  req.DialogID,
 		Name:      &name,
 		Message:   messagesJSON,
@@ -356,7 +362,7 @@ func (s *ChatSessionService) CreateSession(userID, chatID string, req map[string
 	referenceJSON, _ := json.Marshal([]interface{}{})
 
 	conv := &entity.ChatSession{
-		ID:        common.GenerateUUID(),
+		ID:        utility.GenerateUUID(),
 		DialogID:  chatID,
 		Name:      &name,
 		Message:   messagesJSON,
@@ -894,11 +900,11 @@ type feedbackDelta struct {
 }
 
 func chunkFeedbackEnabled() bool {
-	return strings.ToLower(os.Getenv("CHUNK_FEEDBACK_ENABLED")) == "true"
+	return common.GetEnv(common.EnvChunkFeedbackEnabled) == "true"
 }
 
 func chunkFeedbackWeighting() string {
-	weighting := strings.ToLower(strings.TrimSpace(os.Getenv("CHUNK_FEEDBACK_WEIGHTING")))
+	weighting := strings.TrimSpace(common.GetEnvSmall(common.EnvChunkFeedbackWeighting))
 	if weighting == "uniform" || weighting == "relevance" {
 		return weighting
 	}
@@ -1305,7 +1311,12 @@ func (s *ChatSessionService) Completion(userID string, conversationID string, me
 	var answer strings.Builder
 	var finalRef map[string]interface{}
 	for result := range resultChan {
-		if result.Answer != "" {
+		if result.Final && result.Answer != "" {
+			// The final event carries the complete (decorated) answer;
+			// it replaces any accumulated deltas rather than appending.
+			answer.Reset()
+			answer.WriteString(result.Answer)
+		} else if result.Answer != "" {
 			answer.WriteString(result.Answer)
 		}
 		if result.Reference != nil {
@@ -1610,7 +1621,15 @@ func (s *ChatSessionService) ChatCompletions(
 						}
 						sendOrCancel(fmt.Sprintf("data:%s\n\n", sseMarshalChunk(sanitizeJSONFloats(ans).(map[string]interface{}), chatID)))
 					} else {
-						ans := s.structureAnswer(session, "", messageID, sessionID, reference)
+						ans := s.structureAnswer(session, result.Answer, messageID, sessionID, reference)
+						if result.Reference != nil {
+							ans["reference"] = result.Reference
+						}
+						ans["audio_binary"] = result.AudioBinary
+						ans["prompt"] = result.Prompt
+						if result.CreatedAt != 0 {
+							ans["created_at"] = result.CreatedAt
+						}
 						ans["final"] = true
 						if chatID != "" {
 							ans["chat_id"] = chatID
@@ -1659,7 +1678,12 @@ func (s *ChatSessionService) ChatCompletions(
 		var answer strings.Builder
 		var finalRef map[string]interface{}
 		for result := range resultChan {
-			if result.Answer != "" {
+			if result.Final && result.Answer != "" {
+				// The final event carries the complete (decorated) answer;
+				// it replaces any accumulated deltas rather than appending.
+				answer.Reset()
+				answer.WriteString(result.Answer)
+			} else if result.Answer != "" {
 				answer.WriteString(result.Answer)
 			}
 			if result.Reference != nil {
@@ -1740,7 +1764,7 @@ func (s *ChatSessionService) normalizeCompletionMessages(
 	if id, ok := lastUserMsg["id"].(string); ok && id != "" {
 		messageID = id
 	} else {
-		messageID = strings.ReplaceAll(uuid.New().String(), "-", "")
+		messageID = utility.GenerateToken()
 		lastUserMsg["id"] = messageID
 		for i := len(requestMessages) - 1; i >= 0; i-- {
 			if role, _ := requestMessages[i]["role"].(string); role == "user" {
@@ -1780,9 +1804,8 @@ func (s *ChatSessionService) buildDefaultCompletionDialog(tenantID string) *enti
 	}
 }
 
-// createSessionForCompletion mirrors Python _create_session_for_completion.
 func (s *ChatSessionService) createSessionForCompletion(chatID string, dialog *entity.Chat, userID string) (*entity.ChatSession, error) {
-	newID := common.GenerateUUID()
+	newID := utility.GenerateUUID()
 	name := "New session"
 
 	prologue := "Hi! I'm your assistant. What can I do for you?"
@@ -1930,7 +1953,11 @@ func (s *ChatSessionService) initializeReference(session *entity.ChatSession) []
 }
 
 func (s *ChatSessionService) checkTenantLLMAPIKey(tenantID, modelName string) (bool, error) {
-	_, err := NewTenantLLMService().GetAPIKeyFromInstance(tenantID, modelName)
+	resolver := s.modelProviderSvc
+	if resolver == nil {
+		resolver = NewModelProviderService()
+	}
+	_, _, _, _, err := resolver.GetChatModelConfig(tenantID, modelName)
 	if err != nil {
 		return false, err
 	}

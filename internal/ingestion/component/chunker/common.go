@@ -43,6 +43,16 @@ func newChunkerByName(name string, params map[string]any) (runtime.Component, er
 		return NewGroupTitleChunker(params)
 	case ComponentNameHierarchyTitleChunker:
 		return NewHierarchyTitleChunker(params)
+	case ComponentNameQAChunker:
+		return NewQAChunker(params)
+	case ComponentNameOneChunker:
+		return NewOneChunker(params)
+	case ComponentNameTagChunker:
+		return NewTagChunker(params)
+	case ComponentNameTableChunker:
+		return NewTableChunker(params)
+	case ComponentNamePresentationChunker:
+		return NewPresentationChunker(params)
 	default:
 		return nil, fmt.Errorf("chunker: unknown component %q", name)
 	}
@@ -95,25 +105,25 @@ func stringListFromAny(in []any) []string {
 // alternation. Entries wrapped in backticks are treated as regex
 // literals and regex-escaped; plain strings are simply regex-escaped.
 // Longer patterns win (matches python `sorted(set, key=len, reverse=True)`).
+// Mirrors Python _compile_delimiter_pattern: only backtick-wrapped delimiters
+// produce an active pattern. Plain delimiters are not compiled — they are only
+// used by naive_merge / mergeByTokenSize for sentence-level splitting when no
+// active pattern exists.
 func compileDelimPattern(delims []string) *regexp.Regexp {
 	var custom []string
-	var plain []string
 	for _, d := range delims {
 		if d == "" {
 			continue
 		}
 		if strings.HasPrefix(d, "`") && strings.HasSuffix(d, "`") && len(d) >= 2 {
 			custom = append(custom, regexp.QuoteMeta(d[1:len(d)-1]))
-		} else {
-			plain = append(plain, regexp.QuoteMeta(d))
 		}
 	}
-	all := append(plain, custom...)
-	if len(all) == 0 {
+	if len(custom) == 0 {
 		return nil
 	}
-	sort.SliceStable(all, func(i, j int) bool { return len(all[i]) > len(all[j]) })
-	return regexp.MustCompile(strings.Join(all, "|"))
+	sort.SliceStable(custom, func(i, j int) bool { return len(custom[i]) > len(custom[j]) })
+	return regexp.MustCompile(strings.Join(custom, "|"))
 }
 
 // splitKeepingDelim is the Go equivalent of python's
@@ -207,9 +217,42 @@ func emptyOutputs() map[string]any {
 
 func emptyChunkDocs() []schema.ChunkDoc { return []schema.ChunkDoc{} }
 
+// chunkOutputs builds the canonical chunker output (output_format="chunks" +
+// chunks). The Go runtime passes only this explicit output to the next node,
+// so the run-level metadata that downstream components still need (e.g.
+// `name` for Tokenizer title embedding, or tenant_id/kb_id for embedding
+// model resolution) is NOT re-emitted here — it lives in the workflow-wide
+// CanvasState.Globals bag (seeded at pipeline start, published by the File
+// component) and read directly from ctx. See runtime.CanvasState.Globals.
 func chunkOutputs(chunks []schema.ChunkDoc) map[string]any {
 	return map[string]any{
 		"output_format": "chunks",
 		"chunks":        schema.ChunkDocsToMaps(chunks),
 	}
+}
+
+// withName returns a shallow copy of inputs with name set, so a component can
+// guarantee `name` is present on the map it forwards to a decode step without
+// mutating the caller's snapshot.
+func withName(inputs map[string]any, name string) map[string]any {
+	cp := make(map[string]any, len(inputs)+1)
+	for k, v := range inputs {
+		cp[k] = v
+	}
+	cp["name"] = name
+	return cp
+}
+
+// cloneInputs returns a shallow copy of m with room for one extra key. Used to
+// inject the Globals-resolved `name` into the decode input without mutating
+// the caller's input snapshot.
+func cloneInputs(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	cp := make(map[string]any, len(m)+1)
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
 }

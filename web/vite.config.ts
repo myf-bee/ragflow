@@ -6,7 +6,7 @@ import { createHtmlPlugin } from 'vite-plugin-html';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import { appName } from './src/conf.json';
 
-// Inject code location data attributes for react-dev-inspector
+// Inject code location data attributes for react-dev-inspector test web ci 2
 const inspectorBabelPlugin = (): import('vite').Plugin => ({
   name: 'inspector-babel',
   enforce: 'pre' as const,
@@ -75,7 +75,7 @@ export default defineConfig(({ mode }) => {
       },
     },
     hybrid: {
-      '^(/v1/document)|^(/v1/llm/list)|^(/api/v1/datasets)|^(/api/v1/memories)|^(/v1/user)|^(/v1/user/tenant_info)|^(/v1/tenant/list)|^(/v1/system/config)|^(/v1/user/login)|^(/v1/user/logout)|^(/api/v1/files)':
+      '^(/v1/document)|^(/v1/llm/list)|^(/api/v1/datasets)|^(/api/v1/documents/ingest)|^(/api/v1/memories)|^(/v1/user)|^(/v1/user/tenant_info)|^(/v1/tenant/list)|^(/v1/system/config)|^(/v1/user/login)|^(/v1/user/logout)|^(/api/v1/files)':
         {
           target: 'http://127.0.0.1:9384/',
           changeOrigin: true,
