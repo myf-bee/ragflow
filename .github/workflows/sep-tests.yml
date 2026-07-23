@@ -238,6 +238,7 @@ jobs:
           echo "has_web_changes=${has_web}"       >> $GITHUB_OUTPUT
           echo "api_proxy_schemes=${api_proxy_schemes}" >> $GITHUB_OUTPUT
           echo "Go: ${has_go}, Python: ${has_python}, Web: ${has_web}, proxy schemes: ${api_proxy_schemes}"
+          echo "========================================="
 
       - name: Prepare Python test environment
         if: steps.detect_changes.outputs.has_python_changes == 'true'
@@ -345,6 +346,9 @@ jobs:
           set -euo pipefail
           RUNNER_WORKSPACE_PREFIX=${RUNNER_WORKSPACE_PREFIX:-${HOME}}
           BUILD_LOCK_FILE=${RUNNER_WORKSPACE_PREFIX}/artifacts/${GITHUB_REPOSITORY}/docker-build.lock
+          echo "================"
+          echo ${BUILD_LOCK_FILE}
+          echo "================="
           mkdir -p "$(dirname "${BUILD_LOCK_FILE}")"
           # Pass the Gitee personal access token to the Docker build as a BuildKit secret
           # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
