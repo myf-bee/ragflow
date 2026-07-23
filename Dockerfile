@@ -50,6 +50,10 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     fonts-freefont-ttf fonts-noto-cjk postgresql-client
 
 # Download resource from GitHub to /usr/share/infinity
+# Gitee requires a personal access token for cloning; the token is injected
+# via BuildKit secret mount (id=gitee_token) and never persisted in any layer.
+# When the secret is absent (e.g. NEED_MIRROR=0 builds using GitHub), the
+# clone falls back to anonymous access.
 RUN --mount=type=secret,id=gitee_token \
     mkdir -p /usr/share/infinity/resource && \
     if [ "$NEED_MIRROR" == "1" ]; then \
