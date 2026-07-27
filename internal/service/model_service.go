@@ -158,16 +158,6 @@ type CheckConnectionModelInfo struct {
 	Extra      map[string]interface{} `json:"extra"`
 }
 
-func ListModelNames(modelInfo []CheckConnectionModelInfo) []string {
-	names := make([]string, 0, len(modelInfo))
-	for _, mi := range modelInfo {
-		if mi.ModelName != "" {
-			names = append(names, mi.ModelName)
-		}
-	}
-	return names
-}
-
 type CheckConnectionRequest struct {
 	APIKey     string                     `json:"api_key"`
 	Region     string                     `json:"region"`
@@ -871,7 +861,7 @@ func (m *ModelProviderService) ShowInstanceBalance(ctx context.Context, provider
 	return result, common.CodeSuccess, nil
 }
 
-func (m *ModelProviderService) CheckConnection(ctx context.Context, providerName, apiKey, region, baseURL, instanceID, userID string, modelInfo []string) (common.ErrorCode, error) {
+func (m *ModelProviderService) CheckConnection(ctx context.Context, providerName, apiKey, region, baseURL, instanceID, userID string, modelInfo []CheckConnectionModelInfo) (common.ErrorCode, error) {
 	providerInfo := dao.GetModelProviderManager().FindProvider(providerName)
 	if providerInfo == nil {
 		return common.CodeServerError, fmt.Errorf("provider %s not found", providerName)
@@ -898,13 +888,9 @@ func (m *ModelProviderService) CheckConnection(ctx context.Context, providerName
 	}
 
 	apiConfig := &modelModule.APIConfig{
-		ApiKey: &apiKey,
-		Region: &region,
-	}
-
-	err := driver.CheckConnection(ctx, apiConfig)
-	if err != nil {
-		return common.CodeServerError, err
+		ApiKey:  &apiKey,
+		Region:  &region,
+		BaseURL: &baseURL,
 	}
 
 	// Mirror Python verify_api_key: verify each model by making a real
@@ -976,26 +962,38 @@ func (m *ModelProviderService) updateModelVerifyResults(userID, providerName, in
 }
 
 // verifyProviderModel mirrors Python verify_api_key's model-level verification.
-// It tries each model registered for the provider in the factory JSON config
-// and returns a map of modelName → verify status ("success"/"fail") so the
-// caller can persist the results to the database.  A nil error means at least
-// one model passed verification.
-func verifyProviderModel(ctx context.Context, driver modelModule.ModelDriver, providerModels []*modelModule.Model, apiConfig *modelModule.APIConfig, modelInfo []string) (map[string]string, error) {
+// It tries each model and returns a map of modelName → verify status
+// ("success"/"fail") so the caller can persist the results to the database.
+// A nil error means at least one model passed verification.
+//
+// When modelInfo is provided (non-empty), it is used directly as the source of
+// models to verify — each entry carries model_name and model_type ([]string).
+// When modelInfo is empty, the function falls back to the provider's static
+// model catalog (providerModels).
+func verifyProviderModel(ctx context.Context, driver modelModule.ModelDriver, providerModels []*modelModule.Model, apiConfig *modelModule.APIConfig, modelInfo []CheckConnectionModelInfo) (map[string]string, error) {
 	modelVerifyResult := make(map[string]string)
 
 	// Determine which models to verify: prefer the caller-supplied modelInfo
-	// list; fall back to the full provider model catalog.
+	// list; fall back to the full provider model catalog.  Mirrors Python’s
+	// verify_api_key ll. 656–671.
 	var modelsToVerify []*modelModule.Model
 	if len(modelInfo) > 0 {
-		providerModelMap := make(map[string]*modelModule.Model, len(providerModels))
-		for _, m := range providerModels {
-			providerModelMap[m.Name] = m
-		}
-		for _, name := range modelInfo {
-			name = strings.TrimSpace(name)
-			if m, ok := providerModelMap[name]; ok {
-				modelsToVerify = append(modelsToVerify, m)
+		for _, mi := range modelInfo {
+			modelName := strings.TrimSpace(mi.ModelName)
+			if modelName == "" {
+				continue
 			}
+			modelTypes := mi.ModelTypes
+			if len(modelTypes) == 0 {
+				// When the caller didn't supply model types, infer them from the
+				// model name using the same hint heuristics as Python's
+				// OpenAIAPICompatible._infer_model_types.
+				modelTypes = modelModule.InferModelTypes(modelName)
+			}
+			modelsToVerify = append(modelsToVerify, &modelModule.Model{
+				Name:       modelName,
+				ModelTypes: modelTypes,
+			})
 		}
 	} else {
 		modelsToVerify = providerModels
@@ -3191,7 +3189,7 @@ func (m *ModelProviderService) ParseFile(ctx context.Context, providerName, inst
 }
 
 // GetEmbeddingModel returns an EmbeddingModel wrapper for the given tenant
-func (m *ModelProviderService) GetEmbeddingModel(tenantID, compositeModelName string) (*modelModule.EmbeddingModel, error) {
+func (m *ModelProviderService) GetEmbeddingModel(ctx context.Context, tenantID, compositeModelName string) (*modelModule.EmbeddingModel, error) {
 	driver, modelName, apiConfig, maxTokens, err := m.ResolveModelConfig(tenantID, entity.ModelTypeEmbedding, compositeModelName)
 	if err != nil {
 		return nil, err
@@ -3200,7 +3198,7 @@ func (m *ModelProviderService) GetEmbeddingModel(tenantID, compositeModelName st
 }
 
 // GetChatModel  returns a ChatModel wrapper for the given tenant
-func (m *ModelProviderService) GetChatModel(tenantID, compositeModelName string) (*modelModule.ChatModel, error) {
+func (m *ModelProviderService) GetChatModel(ctx context.Context, tenantID, compositeModelName string) (*modelModule.ChatModel, error) {
 	driver, modelName, apiConfig, _, err := m.ResolveModelConfig(tenantID, entity.ModelTypeChat, compositeModelName)
 	if err != nil {
 		return nil, err

@@ -52,7 +52,7 @@ func TestTokenChunker_InvokeEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenChunker: %v", err)
 	}
-	out, err := c.Invoke(context.Background(), map[string]any{})
+	out, err := c.Invoke(context.Background(), nil, map[string]any{})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestTokenChunker_InvokeDelimMode_BasicChunking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenChunker: %v", err)
 	}
-	out, err := c.Invoke(context.Background(), map[string]any{
+	out, err := c.Invoke(context.Background(), nil, map[string]any{
 		"name":          "doc.txt",
 		"output_format": "text",
 		"text":          "alpha\n\nbeta\n\ngamma",
@@ -99,6 +99,43 @@ func TestTokenChunker_InvokeDelimMode_BasicChunking(t *testing.T) {
 	}
 }
 
+// TestTokenChunker_DelimNeverStandaloneChunk is the regression test for
+// the "666" bug: the delimiter must be glued to the end of the preceding
+// segment (Python _split_text_by_pattern), never emitted as its own chunk.
+func TestTokenChunker_DelimNeverStandaloneChunk(t *testing.T) {
+	c, err := NewTokenChunker(map[string]any{
+		"delimiter_mode": "delimiter",
+		"delimiters":     []string{"`666`"},
+	})
+	if err != nil {
+		t.Fatalf("NewTokenChunker: %v", err)
+	}
+	out, err := c.Invoke(context.Background(), nil, map[string]any{
+		"name":          "doc.txt",
+		"output_format": "text",
+		"text":          "alpha section\n666\nbeta section",
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	chunks, _ := out["chunks"].([]map[string]any)
+	if len(chunks) != 2 {
+		t.Fatalf("chunks = %d, want 2: %v", len(chunks), chunks)
+	}
+	for i, ck := range chunks {
+		text, _ := ck["text"].(string)
+		if text == "666" || text == "\n666" || text == "666\n" {
+			t.Errorf("chunk[%d] is the bare delimiter %q", i, text)
+		}
+	}
+	if got, want := chunks[0]["text"], "alpha section\n666"; got != want {
+		t.Errorf("chunk[0] text = %q, want %q", got, want)
+	}
+	if got, want := chunks[1]["text"], "\nbeta section"; got != want {
+		t.Errorf("chunk[1] text = %q, want %q", got, want)
+	}
+}
+
 // TestTokenChunker_InvokeTokenSize_FallbackToMerge covers the
 // "no delimiter hit" branch — the chunker should fall back to
 // token-size merge and emit >=1 chunk.
@@ -113,7 +150,7 @@ func TestTokenChunker_InvokeTokenSize_FallbackToMerge(t *testing.T) {
 	}
 	// Input without any \n\n so the delimiter miss branch triggers
 	// the token_size merge.
-	out, err := c.Invoke(context.Background(), map[string]any{
+	out, err := c.Invoke(context.Background(), nil, map[string]any{
 		"name":          "doc.txt",
 		"output_format": "text",
 		"text":          "First sentence. Second sentence. Third sentence. Fourth.",
@@ -142,7 +179,7 @@ func TestTokenChunker_InvokeChildrenDelim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenChunker: %v", err)
 	}
-	out, err := c.Invoke(context.Background(), map[string]any{
+	out, err := c.Invoke(context.Background(), nil, map[string]any{
 		"name":          "doc.txt",
 		"output_format": "text",
 		"text":          "alpha line\nbeta line",
@@ -172,7 +209,7 @@ func TestTokenChunker_InvokeJSONPayload(t *testing.T) {
 		{"text": "Alpha text\nBeta text", "doc_type_kwd": "text"},
 		{"text": "Gamma text\nDelta text", "doc_type_kwd": "text"},
 	}
-	out, err := c.Invoke(context.Background(), map[string]any{
+	out, err := c.Invoke(context.Background(), nil, map[string]any{
 		"name":          "doc.md",
 		"output_format": "json",
 		"json":          items,
@@ -214,7 +251,7 @@ func TestTokenChunker_InvokeDeterministic(t *testing.T) {
 	}
 	var firstfp fingerprint
 	for run := 0; run < 10; run++ {
-		out, err := c.Invoke(context.Background(), inputs)
+		out, err := c.Invoke(context.Background(), nil, inputs)
 		if err != nil {
 			t.Fatalf("Invoke run %d: %v", run, err)
 		}
@@ -299,7 +336,7 @@ func TestTokenChunker_PrefersUpstreamChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenChunker: %v", err)
 	}
-	out, err := c.Invoke(context.Background(), map[string]any{
+	out, err := c.Invoke(context.Background(), nil, map[string]any{
 		"name":          "doc.md",
 		"output_format": "chunks",
 		"chunks":        []map[string]any{{"text": "CHAPTER-AWARE", "doc_type_kwd": "text"}},
