@@ -74,7 +74,7 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     && apt -o Acquire::Retries=5 update \
     && apt -o Acquire::Retries=5 install -y openresty openresty-openssl3 \
     && ln -sf /usr/local/openresty/nginx/sbin/nginx /usr/sbin/nginx \
-    && echo "/usr/local/openresty/openssl3/lib" > /etc/ld.so.conf.d/openresty-openssl3.conf \
+    && echo "/usr/local/openresty/openssl3/lib" > /etc/ld.so.conf.d/00-openresty-openssl3.conf \
     && ldconfig
 
 # Install uv
