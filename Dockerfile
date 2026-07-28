@@ -67,9 +67,8 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 ENV PYTHONPATH=/ragflow/
 
 COPY docker/service_conf.yaml.template ./conf/service_conf.yaml.template
-COPY docker/entrypoint.sh ./
-COPY docker/entrypoint.sh docker/entrypoint-parser.sh ./
-RUN chmod +x ./entrypoint.sh ./entrypoint-parser.sh
+COPY docker/entrypoint*.sh ./
+RUN chmod +x ./entrypoint*.sh
 
 # Copy nginx configuration for frontend serving
 # OpenResty installs to /usr/local/openresty/nginx/; create /etc/nginx/ symlink tree
