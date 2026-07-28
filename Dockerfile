@@ -49,7 +49,8 @@ RUN --mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked \
     cd web && NODE_OPTIONS="--max-old-space-size=8192" VITE_BUILD_SOURCEMAP=false VITE_MINIFY=esbuild npm run build
 
 RUN --mount=type=bind,source=.git,target=/ragflow/.git \
-    version_info=$(git describe --tags --match=v* --first-parent --always) && \
+    version_info=$(git describe --tags --match=v* --first-parent --always); \
+    echo "RAGFlow version: $version_info"; \
     echo "$version_info" > /ragflow/VERSION
 
 # production stage
@@ -65,6 +66,21 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 ENV PYTHONPATH=/ragflow/
 
+COPY docker/service_conf.yaml.template ./conf/service_conf.yaml.template
+COPY docker/entrypoint.sh ./
+COPY docker/entrypoint.sh docker/entrypoint-parser.sh ./
+RUN chmod +x ./entrypoint.sh ./entrypoint-parser.sh
+
+# Copy nginx configuration for frontend serving
+# OpenResty installs to /usr/local/openresty/nginx/; create /etc/nginx/ symlink tree
+RUN mkdir -p /etc/nginx/conf.d /var/log/nginx && \
+    ln -sf /usr/local/openresty/nginx/conf/mime.types /etc/nginx/mime.types
+COPY docker/nginx/ragflow.conf.golang docker/nginx/ragflow.conf.python docker/nginx/ragflow.conf.hybrid docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
+RUN mv /etc/nginx/ragflow.conf.golang /etc/nginx/conf.d/ragflow.conf.golang && \
+    mv /etc/nginx/ragflow.conf.python /etc/nginx/conf.d/ragflow.conf.python && \
+    mv /etc/nginx/ragflow.conf.hybrid /etc/nginx/conf.d/ragflow.conf.hybrid && \
+    rm -f /etc/nginx/sites-enabled/default
+
 COPY admin admin
 COPY api api
 COPY conf conf
@@ -78,19 +94,13 @@ COPY memory memory
 COPY bin bin
 COPY tools/scripts tools/scripts
 
-COPY docker/service_conf.yaml.template ./conf/service_conf.yaml.template
-COPY docker/entrypoint.sh ./
-RUN chmod +x ./entrypoint*.sh
-
-# Copy nginx configuration for frontend serving
-COPY docker/nginx/ragflow.conf.golang docker/nginx/ragflow.conf.python docker/nginx/ragflow.conf.hybrid docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
-RUN mv /etc/nginx/ragflow.conf.golang /etc/nginx/conf.d/ragflow.conf.golang && \
-    mv /etc/nginx/ragflow.conf.python /etc/nginx/conf.d/ragflow.conf.python && \
-    mv /etc/nginx/ragflow.conf.hybrid /etc/nginx/conf.d/ragflow.conf.hybrid && \
-    rm -f /etc/nginx/sites-enabled/default
-
 # Copy compiled web pages
 COPY --from=builder /ragflow/web/dist /ragflow/web/dist
 
+# Copy version info
 COPY --from=builder /ragflow/VERSION /ragflow/VERSION
+
+# Set environment variables
+ENV HF_ENDPOINT=https://hf-mirror.com
+
 ENTRYPOINT ["./entrypoint.sh"]
