@@ -75,11 +75,13 @@ RUN chmod +x ./entrypoint.sh ./entrypoint-parser.sh
 # OpenResty installs to /usr/local/openresty/nginx/; create /etc/nginx/ symlink tree
 RUN mkdir -p /etc/nginx/conf.d /var/log/nginx && \
     ln -sf /usr/local/openresty/nginx/conf/mime.types /etc/nginx/mime.types
-COPY docker/nginx/ragflow.conf.golang docker/nginx/ragflow.conf.python docker/nginx/ragflow.conf.hybrid docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
-RUN mv /etc/nginx/ragflow.conf.golang /etc/nginx/conf.d/ragflow.conf.golang && \
-    mv /etc/nginx/ragflow.conf.python /etc/nginx/conf.d/ragflow.conf.python && \
-    mv /etc/nginx/ragflow.conf.hybrid /etc/nginx/conf.d/ragflow.conf.hybrid && \
-    rm -f /etc/nginx/sites-enabled/default
+COPY docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
+COPY docker/nginx/ragflow.conf.golang \
+     docker/nginx/ragflow.conf.python \
+     docker/nginx/ragflow.conf.hybrid \
+     /etc/nginx/conf.d/
+
+RUN rm -f /etc/nginx/sites-enabled/default
 
 COPY admin admin
 COPY api api
