@@ -219,13 +219,17 @@ jobs:
           fi
 
       - name: Build ragflow:nightly
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
           GITEE_TOKEN_FILE="$(mktemp)"
           printf '%s' '${{ secrets.GITEE_TOKEN }}' > "${GITEE_TOKEN_FILE}"
           sudo docker pull ubuntu:24.04
-          sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f Dockerfile -t ${RAGFLOW_IMAGE} .
-          rm -f "${GITEE_TOKEN_FILE}"
+          _gitee_secret=$(mktemp)
+          printf '%s' "${GITEE_TOKEN}" > "${_gitee_secret}"
+          sudo DOCKER_BUILDKIT=1 docker build --secret id=gitee_token,src="${_gitee_secret}" --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} -f Dockerfile -t ${RAGFLOW_IMAGE} .
+          rm -f "${_gitee_secret}"
 
       - name: Prepare Python test environment
         run: |
@@ -666,13 +670,17 @@ jobs:
           fi
 
       - name: Build ragflow:nightly
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
           GITEE_TOKEN_FILE="$(mktemp)"
           printf '%s' '${{ secrets.GITEE_TOKEN }}' > "${GITEE_TOKEN_FILE}"
           sudo docker pull ubuntu:24.04
-          sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f Dockerfile -t ${RAGFLOW_IMAGE} .
-          rm -f "${GITEE_TOKEN_FILE}"
+          _gitee_secret=$(mktemp)
+          printf '%s' "${GITEE_TOKEN}" > "${_gitee_secret}"
+          sudo DOCKER_BUILDKIT=1 docker build --secret id=gitee_token,src="${_gitee_secret}" --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} -f Dockerfile -t ${RAGFLOW_IMAGE} .
+          rm -f "${_gitee_secret}"
 
       - name: Prepare Python test environment
         run: |
