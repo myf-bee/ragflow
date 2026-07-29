@@ -28,6 +28,7 @@ when present, and download only what is still missing.
 """
 
 import os
+import time
 
 import nltk
 
@@ -53,9 +54,12 @@ for _name, _find_path in _REQUIRED_NLTK_DATA:
 # Diagnostic collection logging. pytest is silent during its collection phase
 # (importing test modules and the heavy app code they pull in), so CI hangs
 # here show nothing until "collected N items". When RAGFLOW_TEST_COLLECT_LOG=1
-# we print every collector as pytest starts it: the last path printed before a
-# long silence is the module pytest is stuck importing.
+# we print a start marker for every test module as pytest begins importing it:
+# the last module printed before a long silence is the one pytest is stuck on.
+# At the end we also print the slowest modules ranked by collection time.
 _COLLECT_LOG = os.environ.get("RAGFLOW_TEST_COLLECT_LOG") == "1"
+_COLLECT_START = {}  # nodeid -> monotonic start time
+_COLLECT_MODULE_TIMES = []  # (nodeid, duration) for the final summary
 
 
 def pytest_sessionstart(session):
@@ -69,16 +73,41 @@ def pytest_collectstart(collector):
     path = getattr(collector, "path", None)
     if path is None:
         return
-    # Only log directory-level collectors (Dir/Package), not individual modules,
-    # to keep the CI log concise during the otherwise silent collection phase.
     try:
         is_dir = path.is_dir()
     except AttributeError:
         is_dir = bool(getattr(path, "isdir", lambda: False)())
     if is_dir:
+        # Directory/Package boundary, kept for orientation in the CI log.
         print(f"[COLLECT] {path}", flush=True)
+    else:
+        # Per-module start marker: the last one before a long silence is the
+        # module pytest is stuck importing.
+        nodeid = getattr(collector, "nodeid", None)
+        if nodeid:
+            _COLLECT_START[nodeid] = time.monotonic()
+        print(f"[COLLECT-START] {path}", flush=True)
+
+
+def pytest_collectreport(report):
+    if not _COLLECT_LOG:
+        return
+    nodeid = report.nodeid
+    # Only consider module (file) collectors, not directories or the session.
+    if not nodeid or nodeid.endswith("/") or not nodeid.endswith(".py"):
+        return
+    dur = getattr(report, "duration", None) or 0.0
+    _COLLECT_MODULE_TIMES.append((nodeid, dur))
+    if dur >= 2.0:
+        print(f"[COLLECT-SLOW] {nodeid} {dur:.2f}s", flush=True)
 
 
 def pytest_collection_modifyitems(session, config, items):
-    if _COLLECT_LOG:
-        print(f"[COLLECT] session collection finished: {len(items)} items", flush=True)
+    if not _COLLECT_LOG:
+        return
+    print(f"[COLLECT] session collection finished: {len(items)} items", flush=True)
+    if _COLLECT_MODULE_TIMES:
+        top = sorted(_COLLECT_MODULE_TIMES, key=lambda x: x[1], reverse=True)[:15]
+        print("[COLLECT] slowest modules:", flush=True)
+        for nodeid, dur in top:
+            print(f"[COLLECT]   {dur:8.2f}s  {nodeid}", flush=True)
