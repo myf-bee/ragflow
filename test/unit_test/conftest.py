@@ -58,7 +58,7 @@ for _name, _find_path in _REQUIRED_NLTK_DATA:
 _COLLECT_LOG = os.environ.get("RAGFLOW_TEST_COLLECT_LOG") == "1"
 
 
-def pytest_collection_start(session):
+def pytest_sessionstart(session):
     if _COLLECT_LOG:
         print("[COLLECT] session collection started", flush=True)
 

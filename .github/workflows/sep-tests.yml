@@ -253,6 +253,7 @@ jobs:
           source .venv/bin/activate
           which pytest || echo "pytest not in PATH"
           echo "Start to run unit test"
+          export RAGFLOW_TEST_COLLECT_LOG=1
           python3 run_tests.py -i
 
 
