@@ -4,6 +4,7 @@ USER root
 SHELL ["/bin/bash", "-c"]
 
 ARG NEED_MIRROR=1
+# need to set  docker build --build-arg GITEE_TOKEN="xxxxx"  when build base image
 ARG GITEE_TOKEN=""
 
 WORKDIR /ragflow
@@ -67,7 +68,9 @@ RUN --mount=type=secret,id=gitee_token \
     cp -r /tmp/resource/* /usr/share/infinity/resource && \
     rm -rf /tmp/resource
 
-##ARG NGINX_VERSION=1.31.3-1~noble
+# Install OpenResty (nginx with Lua support for rate limiting)
+# openresty-openssl3 provides a compatible libssl.so.3 (OpenSSL 3.x) under /usr/local/openresty/openssl3/
+# so that the OpenResty nginx binary does not depend on the host OS libssl version.
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     curl -fsSL https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu noble main" > /etc/apt/sources.list.d/openresty.list \
@@ -98,7 +101,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
     UV_HTTP_RETRIES=3
 ENV PATH=/root/.local/bin:$PATH
 
+# Install profiling tools (SYS_PTRACE capability is added via K8s securityContext)
 RUN uv tool install austin-dist && uv tool install austin-tui && uv tool install py-spy
+
 # Install Node.js 22.x (Ubuntu 24.04's Node.js is too old)
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
@@ -170,11 +175,12 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
 
 
 
-# Add dependencies of selenium
+# Install Chrome and ChromeDriver for selenium (from ragflow_deps image)
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/chrome-linux64-121-0-6167-85,target=/chrome-linux64.zip \
     unzip /chrome-linux64.zip && \
     mv chrome-linux64 /opt/chrome && \
     ln -s /opt/chrome/chrome /usr/local/bin/
+
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/chromedriver-linux64-121-0-6167-85,target=/chromedriver-linux64.zip \
     unzip -j /chromedriver-linux64.zip chromedriver-linux64/chromedriver && \
     mv chromedriver /usr/local/bin/ && \
@@ -187,7 +193,16 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps 
         dpkg -i /deps/libssl1.1_1.1.1f-1ubuntu2_arm64.deb; \
     fi
 
+# Configure pip to use mirrors if needed
+RUN mkdir -p /root/.config/pip \
+    && if [ "$NEED_MIRROR" == "1" ]; then \
+    echo "[global]" > /root/.config/pip/pip.conf \
+    && echo "index-url = https://mirrors.aliyun.com/pypi/simple/" >> /root/.config/pip/pip.conf \
+    && echo "trusted-host = mirrors.aliyun.com" >> /root/.config/pip/pip.conf; \
+    fi
+
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     apt-get update --fix-missing && \
     apt-get install -y build-essential libpython3-dev libicu-dev libgbm-dev && \
     rm -rf /var/lib/apt/lists/*
+
