@@ -96,7 +96,14 @@ def pytest_collectreport(report):
     # Only consider module (file) collectors, not directories or the session.
     if not nodeid or nodeid.endswith("/") or not nodeid.endswith(".py"):
         return
-    dur = getattr(report, "duration", None) or 0.0
+    # CollectReport.duration is always 0 for the collection phase in pytest,
+    # so measure wall-clock time ourselves from the start marker recorded in
+    # pytest_collectstart. .pop() also releases the entry after use.
+    start = _COLLECT_START.pop(nodeid, None)
+    if start is not None:
+        dur = time.monotonic() - start
+    else:
+        dur = getattr(report, "duration", None) or 0.0
     _COLLECT_MODULE_TIMES.append((nodeid, dur))
     if dur >= 2.0:
         print(f"[COLLECT-SLOW] {nodeid} {dur:.2f}s", flush=True)
