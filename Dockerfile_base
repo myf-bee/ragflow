@@ -68,18 +68,6 @@ RUN --mount=type=secret,id=gitee_token \
     cp -r /tmp/resource/* /usr/share/infinity/resource && \
     rm -rf /tmp/resource
 
-# Install OpenResty (nginx with Lua support for rate limiting)
-# openresty-openssl3 provides a compatible libssl.so.3 (OpenSSL 3.x) under /usr/local/openresty/openssl3/
-# so that the OpenResty nginx binary does not depend on the host OS libssl version.
-RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
-    curl -fsSL https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu noble main" > /etc/apt/sources.list.d/openresty.list \
-    && apt -o Acquire::Retries=5 update \
-    && apt -o Acquire::Retries=5 install -y openresty openresty-openssl3 \
-    && ln -sf /usr/local/openresty/nginx/sbin/nginx /usr/sbin/nginx \
-    && echo "/usr/local/openresty/openssl3/lib" > /etc/ld.so.conf.d/00-openresty-openssl3.conf \
-    && ldconfig
-
 # Install uv
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     if [ "$NEED_MIRROR" == "1" ]; then \

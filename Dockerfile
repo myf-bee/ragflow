@@ -6,6 +6,16 @@ ARG NEED_MIRROR=0
 
 WORKDIR /ragflow
 
+
+ARG NGINX_VERSION=1.31.3-1~noble
+RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    mkdir -p /etc/apt/keyrings && \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/keyrings/nginx-archive-keyring.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/ubuntu/ noble nginx" > /etc/apt/sources.list.d/nginx.list && \
+    apt -o Acquire::Retries=5 update && \
+    apt -o Acquire::Retries=5 install -y nginx=${NGINX_VERSION} && \
+    apt-mark hold nginx
+
 # install dependencies from uv.lock file
 COPY pyproject.toml uv.lock ./
 
