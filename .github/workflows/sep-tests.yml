@@ -16,7 +16,7 @@ on:
   # — pull_request workflows use the workflow files from the pull request branch, and secrets are unavailable.
   # We use pull_request_target so that GITEE_TOKEN (and other repo secrets) are available when building
   # ragflow:nightly from a fork PR, while still running the full test suite on PRs labeled with `ci`.
-  pull_request_target:
+  pull_request:
     types: [synchronize, labeled]
     paths-ignore:
       - 'docs/**'
