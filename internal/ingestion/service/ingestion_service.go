@@ -64,10 +64,11 @@ type Ingestor struct {
 	ShutdownCh chan struct{}
 
 	// Worker pool
-	taskChan  chan *taskpkg.TaskContext
-	workerWg  sync.WaitGroup
-	startOnce sync.Once
-	stopOnce  sync.Once // guards close(ShutdownCh) against double-close on repeated Stop
+	taskChan   chan *taskpkg.TaskContext
+	workerWg   sync.WaitGroup
+	startOnce  sync.Once
+	workerOnce sync.Once // guards startWorkerPool; must NOT be startOnce (Start wraps start() in startOnce, and start() calls startWorkerPool -> re-entry deadlock)
+	stopOnce   sync.Once // guards close(ShutdownCh) against double-close on repeated Stop
 
 	ingestionTaskSvc *servicepkg.IngestionTaskService
 	docState         *docStateUpdater
@@ -246,7 +247,7 @@ func (e *Ingestor) startDatasetKnowledgeCompile() {
 		common.Warn(fmt.Sprintf("dataset-level compile consumer unavailable; compiled chunks will not be merged: %v", err))
 		return
 	}
-	e.knowledgeCompile = knowledge_compile.NewConsumer(knowledge_compile.DefaultScheduler())
+	e.knowledgeCompile = knowledge_compile.NewConsumer(knowledge_compile.DefaultClaimer())
 	n := e.kcConcurrency
 	if n <= 0 {
 		n = int32(runtime.NumCPU())
@@ -382,7 +383,7 @@ func (e *Ingestor) processMessage(handle common.TaskHandle) {
 }
 
 func (e *Ingestor) startWorkerPool() {
-	e.startOnce.Do(func() {
+	e.workerOnce.Do(func() {
 		for i := int32(0); i < e.maxConcurrency; i++ {
 			e.workerWg.Add(1)
 			go e.workerLoop(i)
@@ -459,7 +460,7 @@ func (e *Ingestor) markStopped(ctx context.Context, taskID string) bool {
 	}
 	if rc := redis2.Get(); rc != nil {
 		utility.BestEffort(fmt.Sprintf("clear cancel flag for %s", taskID), func() error {
-			rc.Delete(fmt.Sprintf("%s-cancel", taskID))
+			rc.Delete(ctx, fmt.Sprintf("%s-cancel", taskID))
 			return nil // Delete returns bool; the bool does not distinguish "not found" from "error"
 		})
 	}
@@ -502,7 +503,7 @@ func (e *Ingestor) runTask(ctx context.Context, task *entity.IngestionTask) bool
 	if rc := redis2.Get(); rc != nil {
 		key := fmt.Sprintf("%s-cancel", task.ID)
 		utility.BestEffort(fmt.Sprintf("clear stale cancel flag for %s", task.ID), func() error {
-			rc.Delete(key)
+			rc.Delete(ctx, key)
 			return nil // Delete returns bool; false may mean "key not found" or "error"
 		})
 	}
@@ -664,7 +665,7 @@ func (e *Ingestor) ackOrNack(taskCtx *taskpkg.TaskContext, terminal bool) {
 func (e *Ingestor) defaultCancelCheck(ctx context.Context, taskID string) bool {
 	rc := redis2.Get()
 	if rc != nil {
-		if ok, _ := rc.Exist(fmt.Sprintf("%s-cancel", taskID)); ok {
+		if ok, _ := rc.Exist(ctx, fmt.Sprintf("%s-cancel", taskID)); ok {
 			return true
 		}
 	}

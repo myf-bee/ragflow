@@ -242,8 +242,6 @@ jobs:
         if: steps.detect_changes.outputs.has_python_changes == 'true'
         run: |
           git config --global url."https://oauth2:${GITEE_TOKEN}@gitee.com/".insteadOf "https://gitee.com/"
-          echo "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          echo $GITEE_TOKEN
           uv sync --python 3.13 --group test --frozen
           uv pip install -e sdk/python
 
