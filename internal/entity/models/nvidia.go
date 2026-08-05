@@ -23,13 +23,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"ragflow/internal/common"
+	"sort"
 	"strings"
+	"time"
+)
+
+const (
+	nvidiaHostedAPIHost   = "integrate.api.nvidia.com"
+	nvidiaCatalogURL      = "https://api.ngc.nvidia.com/v2/search/catalog/resources/ENDPOINT"
+	nvidiaCatalogPageSize = 500
 )
 
 // NvidiaModel implements ModelDriver for Nvidia
 type NvidiaModel struct {
-	baseModel BaseModel
+	baseModel     BaseModel
+	catalogURL    string
+	hostedAPIHost string
 }
 
 // NewNvidiaModel creates a new Nvidia model instance
@@ -38,12 +49,14 @@ func NewNvidiaModel(baseURL map[string]string, urlSuffix URLSuffix) *NvidiaModel
 		baseModel: BaseModel{
 			BaseURL:    baseURL,
 			URLSuffix:  urlSuffix,
-			httpClient: NewDriverHTTPClient(),
+			httpClient: NewDriverHTTPClient(false),
 		},
+		catalogURL:    nvidiaCatalogURL,
+		hostedAPIHost: nvidiaHostedAPIHost,
 	}
 }
 
-func (n NvidiaModel) NewInstance(baseURL map[string]string) ModelDriver {
+func (n *NvidiaModel) NewInstance(baseURL map[string]string) ModelDriver {
 	return NewNvidiaModel(baseURL, n.baseModel.URLSuffix)
 }
 
@@ -64,42 +77,10 @@ func (n *NvidiaModel) ChatWithMessages(ctx context.Context, modelName string, me
 	if err != nil {
 		return nil, err
 	}
-	baseURL := resolvedBaseURL
-	if baseURL == "" {
-		baseURL = resolvedBaseURL
-	}
-	url := fmt.Sprintf("%s/%s", baseURL, n.baseModel.URLSuffix.Chat)
-
-	apiMessages := make([]map[string]interface{}, len(messages))
-	for i, msg := range messages {
-		apiMessages[i] = map[string]interface{}{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-	}
-
-	reqBody := map[string]interface{}{
-		"model":    modelName,
-		"messages": apiMessages,
-		"stream":   false,
-	}
+	url := fmt.Sprintf("%s/%s", resolvedBaseURL, n.baseModel.URLSuffix.Chat)
+	reqBody := buildRequestBody(chatModelConfig, modelName, messages, false)
 
 	if chatModelConfig != nil {
-		if chatModelConfig.Stream != nil {
-			reqBody["stream"] = *chatModelConfig.Stream
-		}
-		if chatModelConfig.MaxTokens != nil {
-			reqBody["max_tokens"] = *chatModelConfig.MaxTokens
-		}
-		if chatModelConfig.Temperature != nil {
-			reqBody["temperature"] = *chatModelConfig.Temperature
-		}
-		if chatModelConfig.TopP != nil {
-			reqBody["top_p"] = *chatModelConfig.TopP
-		}
-		if chatModelConfig.Stop != nil {
-			reqBody["stop"] = *chatModelConfig.Stop
-		}
 		if chatModelConfig.Thinking != nil {
 			if *chatModelConfig.Thinking {
 				reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
@@ -109,79 +90,11 @@ func (n *NvidiaModel) ChatWithMessages(ctx context.Context, modelName string, me
 		}
 	}
 
-	jsonData, err := json.Marshal(reqBody)
+	body, err := n.baseModel.doRequest(ctx, url, apiConfig, reqBody, nonStreamCallTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
-
-	resp, err := n.baseModel.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result map[string]interface{}
-	if err = json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	choices, ok := result["choices"].([]interface{})
-	if !ok || len(choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
-
-	firstChoice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid choice format")
-	}
-
-	messageMap, ok := firstChoice["message"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid message format")
-	}
-
-	content, ok := messageMap["content"].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid content format")
-	}
-
-	var reasonContent string
-	if chatModelConfig != nil && chatModelConfig.Thinking != nil && *chatModelConfig.Thinking {
-		reasonContent, ok = messageMap["reasoning_content"].(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid content format")
-		}
-		if reasonContent != "" && reasonContent[0] == '\n' {
-			reasonContent = reasonContent[1:]
-		}
-	}
-
-	chatResponse := &ChatResponse{
-		Answer:        &content,
-		ReasonContent: &reasonContent,
-	}
-
-	return chatResponse, nil
+	return HandleNonStreamingResponse(body, modelUsage, chatModelConfig, OpenAIParserConfig)
 }
 
 func (n *NvidiaModel) ChatStreamlyWithSender(ctx context.Context, modelName string, messages []Message, apiConfig *APIConfig, modelConfig *ChatConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
@@ -199,45 +112,10 @@ func (n *NvidiaModel) ChatStreamlyWithSender(ctx context.Context, modelName stri
 	if err != nil {
 		return err
 	}
-	baseURL := resolvedBaseURL
-	if baseURL == "" {
-		baseURL = resolvedBaseURL
-	}
-	url := fmt.Sprintf("%s/%s", baseURL, n.baseModel.URLSuffix.Chat)
-
-	apiMessages := make([]map[string]interface{}, len(messages))
-	for i, msg := range messages {
-		apiMessages[i] = map[string]interface{}{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-	}
-
-	reqBody := map[string]interface{}{
-		"model":    modelName,
-		"messages": apiMessages,
-		"stream":   true,
-	}
+	url := fmt.Sprintf("%s/%s", resolvedBaseURL, n.baseModel.URLSuffix.Chat)
+	reqBody := buildRequestBody(modelConfig, modelName, messages, true)
 
 	if modelConfig != nil {
-		if modelConfig.Stream != nil {
-			reqBody["stream"] = *modelConfig.Stream
-		}
-		if modelConfig.MaxTokens != nil {
-			reqBody["max_tokens"] = *modelConfig.MaxTokens
-		}
-		if modelConfig.Temperature != nil {
-			reqBody["temperature"] = *modelConfig.Temperature
-		}
-		if modelConfig.DoSample != nil {
-			reqBody["do_sample"] = *modelConfig.DoSample
-		}
-		if modelConfig.TopP != nil {
-			reqBody["top_p"] = *modelConfig.TopP
-		}
-		if modelConfig.Stop != nil {
-			reqBody["stop"] = *modelConfig.Stop
-		}
 		if modelConfig.Thinking != nil {
 			if *modelConfig.Thinking {
 				reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
@@ -247,74 +125,11 @@ func (n *NvidiaModel) ChatStreamlyWithSender(ctx context.Context, modelName stri
 		}
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
+	reqBody["stream_options"] = map[string]any{"include_usage": true}
 
-	ctx, cancel := context.WithTimeout(ctx, streamCallTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
-
-	resp, err := n.baseModel.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	if _, err := ParseSSEStream[map[string]interface{}](resp.Body, func(event map[string]interface{}) error {
-		choices, ok := event["choices"].([]interface{})
-		if !ok || len(choices) == 0 {
-			return nil
-		}
-
-		firstChoice, ok := choices[0].(map[string]interface{})
-		if !ok {
-			return nil
-		}
-
-		delta, ok := firstChoice["delta"].(map[string]interface{})
-		if !ok {
-			return nil
-		}
-
-		reasoningContent, ok := delta["reasoning_content"].(string)
-		if ok && reasoningContent != "" {
-			if err := sender(nil, &reasoningContent); err != nil {
-				return err
-			}
-		}
-
-		content, ok := delta["content"].(string)
-		if ok && content != "" {
-			if err := sender(&content, nil); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	}); err != nil {
-		return fmt.Errorf("failed to scan response body: %w", err)
-	}
-
-	endOfStream := "[DONE]"
-	if err = sender(&endOfStream, nil); err != nil {
-		return err
-	}
-
-	return nil
+	return n.baseModel.doStreamRequest(ctx, url, apiConfig, reqBody, streamCallTimeout, func(body io.ReadCloser) error {
+		return HandleStreamingResponse(body, modelUsage, modelConfig, OpenAIParserConfig, sender)
+	})
 }
 
 type nvidiaEmbeddingResponse struct {
@@ -341,12 +156,8 @@ func (n NvidiaModel) Embed(ctx context.Context, modelName *string, texts []strin
 	if err != nil {
 		return nil, err
 	}
-	baseURL := resolvedBaseURL
-	if baseURL == "" {
-		baseURL = resolvedBaseURL
-	}
 
-	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(baseURL, "/"), n.baseModel.URLSuffix.Embedding)
+	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(resolvedBaseURL, "/"), n.baseModel.URLSuffix.Embedding)
 
 	reqBody := map[string]interface{}{
 		"model":           *modelName,
@@ -457,12 +268,8 @@ func (n NvidiaModel) Rerank(ctx context.Context, modelName *string, query string
 	if err != nil {
 		return nil, err
 	}
-	baseURL := resolvedBaseURL
-	if baseURL == "" {
-		baseURL = resolvedBaseURL
-	}
 
-	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(baseURL, "/"), n.baseModel.URLSuffix.Rerank)
+	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(resolvedBaseURL, "/"), n.baseModel.URLSuffix.Rerank)
 
 	topN := len(documents)
 	if rerankConfig != nil && rerankConfig.TopN > 0 && rerankConfig.TopN < topN {
@@ -573,22 +380,18 @@ func (n NvidiaModel) ListModels(ctx context.Context, apiConfig *APIConfig) ([]Li
 	if err != nil {
 		return nil, err
 	}
-	baseURL := resolvedBaseURL
-	if baseURL == "" {
-		baseURL = resolvedBaseURL
-	}
+	url := fmt.Sprintf("%s/%s", strings.TrimRight(resolvedBaseURL, "/"), strings.TrimLeft(n.baseModel.URLSuffix.Models, "/"))
 
-	url := fmt.Sprintf("%s/%s", baseURL, n.baseModel.URLSuffix.Models)
-
-	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
+	modelListCtx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(modelListCtx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := n.baseModel.httpClient.Do(req)
 	if err != nil {
@@ -614,7 +417,300 @@ func (n NvidiaModel) ListModels(ctx context.Context, apiConfig *APIConfig) ([]Li
 		return nil, fmt.Errorf("invalid models list format")
 	}
 
-	return ParseListModel(modelList), nil
+	var provider *Provider
+	if pm := GetProviderManager(); pm != nil {
+		provider = pm.FindProvider("NVIDIA")
+	}
+	models := parseNvidiaModelList(modelList, provider)
+	if n.usesHostedCatalog(resolvedBaseURL) {
+		catalogCtx, catalogCancel := context.WithTimeout(ctx, nonStreamCallTimeout)
+		catalog, catalogErr := n.fetchHostedCatalog(catalogCtx)
+		catalogCancel()
+		if catalogErr != nil {
+			return nil, catalogErr
+		}
+		models = filterNvidiaHostedModels(models, catalog, time.Now().UTC())
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("Nvidia models API returned no usable models")
+	}
+	return models, nil
+}
+
+type nvidiaCatalogLabel struct {
+	Key              string   `json:"key"`
+	Values           []string `json:"values"`
+	UnresolvedValues []string `json:"unresolvedValues"`
+}
+
+type nvidiaCatalogAttribute struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type nvidiaCatalogResource struct {
+	Name        string                   `json:"name"`
+	DisplayName string                   `json:"displayName"`
+	Labels      []nvidiaCatalogLabel     `json:"labels"`
+	Attributes  []nvidiaCatalogAttribute `json:"attributes"`
+}
+
+type nvidiaCatalogGroup struct {
+	GroupValue string                  `json:"groupValue"`
+	TotalCount int                     `json:"totalCount"`
+	Resources  []nvidiaCatalogResource `json:"resources"`
+}
+
+type nvidiaCatalogResponse struct {
+	Results []nvidiaCatalogGroup `json:"results"`
+}
+
+func (n NvidiaModel) usesHostedCatalog(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	return err == nil && strings.EqualFold(parsed.Hostname(), n.hostedAPIHost)
+}
+
+func (n NvidiaModel) fetchHostedCatalog(ctx context.Context) (*nvidiaCatalogResponse, error) {
+	parsed, err := url.Parse(n.catalogURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Nvidia endpoint catalog URL: %w", err)
+	}
+
+	var merged *nvidiaCatalogResponse
+	endpointGroupIndex := -1
+	totalCount := -1
+	for page := 0; ; page++ {
+		catalogQuery, err := json.Marshal(map[string]int{"page": page, "pageSize": nvidiaCatalogPageSize})
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode Nvidia endpoint catalog query: %w", err)
+		}
+		pageURL := *parsed
+		query := pageURL.Query()
+		query.Set("q", string(catalogQuery))
+		query.Set("group-labels-by-labelset", "true")
+		pageURL.RawQuery = query.Encode()
+
+		catalogPage, err := n.fetchHostedCatalogPage(ctx, pageURL.String())
+		if err != nil {
+			return nil, err
+		}
+
+		pageGroupIndex := -1
+		for i := range catalogPage.Results {
+			if catalogPage.Results[i].GroupValue == "ENDPOINT" {
+				pageGroupIndex = i
+				break
+			}
+		}
+		if pageGroupIndex < 0 {
+			return nil, fmt.Errorf("Nvidia endpoint catalog response is missing the ENDPOINT group")
+		}
+
+		pageGroup := catalogPage.Results[pageGroupIndex]
+		if pageGroup.TotalCount < 0 {
+			return nil, fmt.Errorf("Nvidia endpoint catalog returned invalid total count %d", pageGroup.TotalCount)
+		}
+		if merged == nil {
+			merged = catalogPage
+			endpointGroupIndex = pageGroupIndex
+			totalCount = pageGroup.TotalCount
+			merged.Results[endpointGroupIndex].Resources = nil
+		} else if pageGroup.TotalCount != totalCount {
+			return nil, fmt.Errorf("Nvidia endpoint catalog total count changed from %d to %d", totalCount, pageGroup.TotalCount)
+		}
+
+		merged.Results[endpointGroupIndex].Resources = append(merged.Results[endpointGroupIndex].Resources, pageGroup.Resources...)
+		if len(pageGroup.Resources) < nvidiaCatalogPageSize {
+			break
+		}
+	}
+
+	if merged == nil || endpointGroupIndex < 0 {
+		return nil, fmt.Errorf("Nvidia endpoint catalog returned no pages")
+	}
+	if len(merged.Results[endpointGroupIndex].Resources) < totalCount {
+		return nil, fmt.Errorf(
+			"Nvidia endpoint catalog returned %d of %d resources",
+			len(merged.Results[endpointGroupIndex].Resources),
+			totalCount,
+		)
+	}
+	return merged, nil
+}
+
+func (n NvidiaModel) fetchHostedCatalogPage(ctx context.Context, pageURL string) (*nvidiaCatalogResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Nvidia endpoint catalog request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := n.baseModel.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request Nvidia endpoint catalog: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Nvidia endpoint catalog: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Nvidia endpoint catalog error: %s, body: %s", resp.Status, string(body))
+	}
+
+	var catalog nvidiaCatalogResponse
+	if err = json.Unmarshal(body, &catalog); err != nil {
+		return nil, fmt.Errorf("failed to parse Nvidia endpoint catalog: %w", err)
+	}
+	return &catalog, nil
+}
+
+func filterNvidiaHostedModels(models []ListModelResponse, catalog *nvidiaCatalogResponse, now time.Time) []ListModelResponse {
+	if catalog == nil {
+		return nil
+	}
+
+	var resources []nvidiaCatalogResource
+	for _, group := range catalog.Results {
+		if group.GroupValue != "ENDPOINT" {
+			continue
+		}
+		if group.TotalCount < 0 || len(group.Resources) < group.TotalCount {
+			return nil
+		}
+		resources = group.Resources
+		break
+	}
+	if resources == nil {
+		return nil
+	}
+
+	activeEndpoints := make(map[string]struct{}, len(resources))
+	for _, resource := range resources {
+		if !nvidiaCatalogResourceIsActive(resource, now) {
+			continue
+		}
+		publishers := nvidiaCatalogLabelValues(resource, "publisher", true)
+		displayName := resource.DisplayName
+		if displayName == "" {
+			displayName = resource.Name
+		}
+		if len(publishers) == 0 || displayName == "" {
+			continue
+		}
+		activeEndpoints[nvidiaCatalogKey(publishers[0], displayName)] = struct{}{}
+	}
+
+	filtered := make([]ListModelResponse, 0, len(models))
+	for _, model := range models {
+		publisher, modelName, found := strings.Cut(model.Name, "/")
+		if !found {
+			continue
+		}
+		if _, ok := activeEndpoints[nvidiaCatalogKey(publisher, modelName)]; ok {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func nvidiaCatalogResourceIsActive(resource nvidiaCatalogResource, now time.Time) bool {
+	if !containsNvidiaCatalogValue(nvidiaCatalogLabelValues(resource, "nimType", false), "Free Endpoint") {
+		return false
+	}
+	deprecation := ""
+	for _, attribute := range resource.Attributes {
+		if attribute.Key == "DEPRECATION" {
+			deprecation = attribute.Value
+			break
+		}
+	}
+	if deprecation == "" {
+		return true
+	}
+	cutoff, err := time.Parse("01/02/2006", deprecation)
+	if err != nil {
+		return false
+	}
+	today := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	return cutoff.After(today)
+}
+
+func nvidiaCatalogLabelValues(resource nvidiaCatalogResource, key string, unresolved bool) []string {
+	for _, label := range resource.Labels {
+		if label.Key != key {
+			continue
+		}
+		if unresolved {
+			return label.UnresolvedValues
+		}
+		return label.Values
+	}
+	return nil
+}
+
+func nvidiaCatalogKey(publisher, modelName string) string {
+	publisher = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(publisher)), "_", "-")
+	return publisher + "\x00" + modelName
+}
+
+func containsNvidiaCatalogValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func parseNvidiaModelList(modelList ModelList, provider *Provider) []ListModelResponse {
+	const defaultMaxTokens = 8192
+
+	models := make([]ListModelResponse, 0, len(modelList.Models))
+	seen := make(map[string]struct{}, len(modelList.Models))
+	for _, item := range modelList.Models {
+		modelName := strings.TrimSpace(item.ID)
+		if modelName == "" {
+			continue
+		}
+		if _, ok := seen[modelName]; ok {
+			continue
+		}
+		seen[modelName] = struct{}{}
+
+		response := ListModelResponse{Name: modelName}
+		var preset *Model
+		if provider != nil {
+			for _, model := range provider.Models {
+				if strings.EqualFold(model.Name, modelName) {
+					preset = model
+					break
+				}
+			}
+		}
+		if preset != nil {
+			response.MaxOutput = preset.MaxOutput
+			response.ModelTypes = append([]string(nil), preset.ModelTypes...)
+			response.Thinking = preset.Thinking
+			response.MaxDimension = preset.MaxDimension
+			response.Dimensions = append([]int(nil), preset.Dimensions...)
+		} else {
+			maxTokens := defaultMaxTokens
+			response.MaxOutput = &maxTokens
+			response.ModelTypes = InferModelTypes(modelName)
+		}
+		if len(response.ModelTypes) == 0 {
+			response.ModelTypes = InferModelTypes(modelName)
+		}
+
+		models = append(models, response)
+	}
+
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].Name < models[j].Name
+	})
+	return models
 }
 
 func (n NvidiaModel) Balance(ctx context.Context, apiConfig *APIConfig) (map[string]interface{}, error) {

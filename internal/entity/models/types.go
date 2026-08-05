@@ -105,12 +105,13 @@ type OCRFileResponse struct {
 }
 
 type ListModelResponse struct {
-	Name         string         `json:"name"`
-	MaxTokens    *int           `json:"max_tokens"`
-	ModelTypes   []string       `json:"model_types"`
-	Thinking     *ModelThinking `json:"thinking"`
-	MaxDimension *int           `json:"max_dimension"` // used by embedding models
-	Dimensions   []int          `json:"dimensions"`
+	Name          string         `json:"name"`
+	ContentLength *int           `json:"content_length"`
+	MaxOutput     *int           `json:"max_output"`
+	ModelTypes    []string       `json:"model_types"`
+	Thinking      *ModelThinking `json:"thinking"`
+	MaxDimension  *int           `json:"max_dimension"` // used by embedding models
+	Dimensions    []int          `json:"dimensions"`
 }
 
 type ParseFileResponse struct {
@@ -182,9 +183,6 @@ type ChatConfig struct {
 	// non-nil) after the stream completes; callers read it the same
 	// way they read ToolCallsResult.
 	UsageResult *TokenUsage `json:"-"`
-	// StreamCallback receives raw content/reasoning deltas as soon as
-	// the model driver streams them.
-	StreamCallback func(contentDelta, reasoningDelta string) `json:"-"`
 }
 
 type APIConfig struct {
@@ -194,7 +192,8 @@ type APIConfig struct {
 }
 
 type EmbeddingConfig struct {
-	Dimension int
+	Dimension      int
+	EncodingFormat string
 }
 
 type RerankConfig struct {

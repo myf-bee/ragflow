@@ -40,7 +40,7 @@ func NewPaddleOCRModel(baseURL map[string]string, urlSuffix URLSuffix) *PaddleOC
 			BaseURL:          baseURL,
 			URLSuffix:        urlSuffix,
 			AllowEmptyAPIKey: true,
-			httpClient:       NewDriverHTTPClient(),
+			httpClient:       NewDriverHTTPClient(false),
 		},
 	}
 }
@@ -245,10 +245,7 @@ func (p *PaddleOCRModel) OCRFile(ctx context.Context, modelName *string, content
 		}
 
 		// Exponential backoff
-		pollInterval = time.Duration(float64(pollInterval) * pollMultiplier)
-		if pollInterval > maxPollInterval {
-			pollInterval = maxPollInterval
-		}
+		pollInterval = min(time.Duration(float64(pollInterval)*pollMultiplier), maxPollInterval)
 
 		select {
 		case <-time.After(pollInterval):

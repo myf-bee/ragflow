@@ -118,7 +118,7 @@ func resolveOutputFormat(family string, setups map[string]schema.ParserSetup, al
 		}
 	}
 	return "", fmt.Errorf(
-		"Parser: output_format %q for %q is not in allowed_output_format %v",
+		"parser: output_format %q for %q is not in allowed_output_format %v",
 		format, family, allowedList,
 	)
 }
@@ -156,13 +156,13 @@ func dispatchParse(ctx context.Context, fileType utility.FileType, filename stri
 
 	p, err := parser.GetParser(fileType)
 	if err != nil {
-		return parserDispatchResult{Err: fmt.Errorf("Parser: resolve %q: %w", fileType, err)}
+		return parserDispatchResult{Err: fmt.Errorf("parser: resolve %q: %w", fileType, err)}
 	}
 	configureParserFromSetups(p, fileType, setups)
 
 	res := p.ParseWithResult(ctx, filename, data)
 	if res.Err != nil {
-		return parserDispatchResult{Err: fmt.Errorf("Parser: %q: %w", fileType, res.Err)}
+		return parserDispatchResult{Err: fmt.Errorf("parser: %q: %w", fileType, res.Err)}
 	}
 	// Carry the configured parse_method on the file metadata so
 	// downstream consumers can read which provider ran.
@@ -305,19 +305,29 @@ func pythonFamilyName(raw string) string {
 		"go", "ts", "sh", "cs", "kt", "sql":
 		return "text&code"
 	case "mp4", "avi", "mkv", "mov", "webm", "flv",
-		"mpeg", "mpg", "wmv", "3gp", "3gpp":
+		"mpeg", "mpg", "wmv", "3gp", "3gpp", "video":
 		return "video"
-	case "eml", "msg":
+	case "eml", "msg", "email":
 		return "email"
 	case "da", "wave", "wav", "mp3", "aac", "flac", "ogg",
-		"aiff", "au", "midi", "wma", "ape", "alac", "wv", "opus":
+		"aiff", "au", "midi", "wma", "ape", "alac", "wv", "opus", "aural":
 		return "audio"
 	case "visual", "picture", "image",
 		"png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
 		"webp", "svg", "ico", "avif", "heic", "apng":
-		return "picture"
+		return "image"
 	}
 	return ""
+}
+
+// ParserFileFamily normalises a free-form file-type/extension hint to the
+// python-side family identifier used as the key into a Parser component's
+// setups (e.g. "pdf", "docx", "slides", "text&code"). It is the exported
+// entry point for callers outside this package (e.g. the ingestion task
+// executor that injects the debug page cap into override_params) that need
+// to build the canonical ParserConfig[cpnID][family]["pages"] shape.
+func ParserFileFamily(ext string) string {
+	return pythonFamilyName(ext)
 }
 
 // jsonItemsToPages reshapes a parsed JSON payload into the

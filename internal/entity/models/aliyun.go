@@ -39,7 +39,7 @@ func NewAliyunModel(baseURL map[string]string, urlSuffix URLSuffix) *AliyunModel
 		baseModel: BaseModel{
 			BaseURL:    baseURL,
 			URLSuffix:  urlSuffix,
-			httpClient: NewDriverHTTPClient(),
+			httpClient: NewDriverHTTPClient(false),
 		},
 	}
 }
@@ -65,38 +65,12 @@ func (a *AliyunModel) ChatWithMessages(ctx context.Context, modelName string, me
 	if err != nil {
 		return nil, err
 	}
-	baseURL := resolvedBaseURL
-
-	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(baseURL, "/"), a.baseModel.URLSuffix.Chat)
+	url := fmt.Sprintf("%s/%s", resolvedBaseURL, a.baseModel.URLSuffix.Chat)
 
 	// Build request body
-	reqBody := map[string]interface{}{
-		"model":       modelName,
-		"messages":    buildChatMessages(messages),
-		"stream":      false,
-		"temperature": 1,
-	}
+	reqBody := buildRequestBody(chatModelConfig, modelName, messages, false)
 
 	if chatModelConfig != nil {
-		if chatModelConfig.Stream != nil {
-			reqBody["stream"] = *chatModelConfig.Stream
-		}
-
-		if chatModelConfig.MaxTokens != nil {
-			reqBody["max_tokens"] = *chatModelConfig.MaxTokens
-		}
-
-		if chatModelConfig.Temperature != nil {
-			reqBody["temperature"] = *chatModelConfig.Temperature
-		}
-
-		if chatModelConfig.TopP != nil {
-			reqBody["top_p"] = *chatModelConfig.TopP
-		}
-
-		if chatModelConfig.Stop != nil {
-			reqBody["stop"] = *chatModelConfig.Stop
-		}
 
 		if chatModelConfig.Thinking != nil {
 			if *chatModelConfig.Thinking {
@@ -107,88 +81,21 @@ func (a *AliyunModel) ChatWithMessages(ctx context.Context, modelName string, me
 		}
 
 		if chatModelConfig.Tools != nil {
-			reqBody["tools"] = chatModelConfig.Tools
 			reqBody["tool_choice"] = aliyunToolChoice(modelName, messages, chatModelConfig.ToolChoice)
 		}
 	}
 
-	jsonData, err := json.Marshal(reqBody)
+	// For qwen3 models on DashScope, enable_thinking defaults to true when
+	// omitted. RAGFlow's default is to disable thinking unless explicitly
+	// enabled by the user, matching Python's chat_model.py behavior.
+	applyQwen3ThinkingDefault(modelName, reqBody)
+
+	body, err := a.baseModel.doRequest(ctx, url, apiConfig, reqBody, nonStreamCallTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
-
-	resp, err := a.baseModel.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var result map[string]interface{}
-	if err = json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	choices, ok := result["choices"].([]interface{})
-	if !ok || len(choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
-
-	firstChoice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid choice format")
-	}
-
-	messageMap, ok := firstChoice["message"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid message format")
-	}
-
-	answer, hasAnswer := messageMap["content"].(string)
-	toolCalls := extractToolCalls(messageMap)
-	if !hasAnswer && len(toolCalls) == 0 {
-		return nil, fmt.Errorf("response contains neither content nor tool calls")
-	}
-
-	var reasonContent string
-	if chatModelConfig != nil && chatModelConfig.Thinking != nil && *chatModelConfig.Thinking {
-		reasonContent, ok = messageMap["reasoning_content"].(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid content format")
-		}
-		// if first char of reasonContent is \n remove the '\n'
-		if reasonContent != "" && reasonContent[0] == '\n' {
-			reasonContent = reasonContent[1:]
-		}
-	}
-
-	chatResponse := &ChatResponse{
-		Answer:        &answer,
-		ReasonContent: &reasonContent,
-		ToolCalls:     toolCalls,
-	}
-
-	return chatResponse, nil
+	return HandleNonStreamingResponse(body, modelUsage, chatModelConfig, OpenAIParserConfig)
 }
 
 // ChatStreamlyWithSender sends messages and streams response via sender function (best performance, no channel)
@@ -205,17 +112,11 @@ func (a *AliyunModel) ChatStreamlyWithSender(ctx context.Context, modelName stri
 	if err != nil {
 		return err
 	}
-	baseURL := resolvedBaseURL
-
-	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(baseURL, "/"), a.baseModel.URLSuffix.Chat)
+	url := fmt.Sprintf("%s/%s", resolvedBaseURL, a.baseModel.URLSuffix.Chat)
 
 	// Build request body with streaming enabled
-	reqBody := map[string]interface{}{
-		"model":       modelName,
-		"messages":    buildChatMessages(messages),
-		"stream":      true,
-		"temperature": 1,
-	}
+	reqBody := buildRequestBody(chatModelConfig, modelName, messages, true)
+	reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
 
 	if chatModelConfig != nil {
 		if chatModelConfig.Stream != nil && !*chatModelConfig.Stream {
@@ -223,118 +124,38 @@ func (a *AliyunModel) ChatStreamlyWithSender(ctx context.Context, modelName stri
 		}
 		chatModelConfig.ToolCallsResult = nil
 
-		if chatModelConfig.MaxTokens != nil {
-			reqBody["max_tokens"] = *chatModelConfig.MaxTokens
-		}
-
-		if chatModelConfig.Temperature != nil {
-			reqBody["temperature"] = *chatModelConfig.Temperature
-		}
-
-		if chatModelConfig.DoSample != nil {
-			reqBody["do_sample"] = *chatModelConfig.DoSample
-		}
-
-		if chatModelConfig.TopP != nil {
-			reqBody["top_p"] = *chatModelConfig.TopP
-		}
-
-		if chatModelConfig.Stop != nil {
-			reqBody["stop"] = *chatModelConfig.Stop
-		}
-
 		if chatModelConfig.Thinking != nil {
 			reqBody["enable_thinking"] = *chatModelConfig.Thinking
 		}
 
 		if chatModelConfig.Tools != nil {
-			reqBody["tools"] = chatModelConfig.Tools
 			reqBody["tool_choice"] = aliyunToolChoice(modelName, messages, chatModelConfig.ToolChoice)
 		}
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
+	// For qwen3 models on DashScope, enable_thinking defaults to true when
+	// omitted. RAGFlow's default is to disable thinking unless explicitly
+	// enabled by the user, matching Python's chat_model.py behavior.
+	applyQwen3ThinkingDefault(modelName, reqBody)
 
-	ctx, cancel := context.WithTimeout(ctx, streamCallTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
-
-	resp, err := a.baseModel.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	sawTerminal := false
-	accumulatedToolCalls := make(map[int]map[string]interface{})
-	done, err := ParseSSEStream[map[string]interface{}](resp.Body, func(event map[string]interface{}) error {
-		common.Info(fmt.Sprintf("%v", event))
-
-		choices, ok := event["choices"].([]interface{})
-		if !ok || len(choices) == 0 {
-			return nil
-		}
-
-		firstChoice, ok := choices[0].(map[string]interface{})
-		if !ok {
-			return nil
-		}
-		if finishReason, ok := firstChoice["finish_reason"].(string); ok && finishReason != "" {
-			sawTerminal = true
-		}
-
-		delta, ok := firstChoice["delta"].(map[string]interface{})
-		if !ok {
-			return nil
-		}
-
-		if accumulateToolCallDeltas(delta, accumulatedToolCalls) {
-			return nil
-		}
-
-		content, ok := delta["content"].(string)
-		if ok && content != "" {
-			if err := sender(&content, nil); err != nil {
-				return err
-			}
-		}
-
-		reasoningContent, ok := delta["reasoning_content"].(string)
-		if ok && reasoningContent != "" {
-			if err := sender(nil, &reasoningContent); err != nil {
-				return err
-			}
-		}
-
-		return nil
+	return a.baseModel.doStreamRequest(ctx, url, apiConfig, reqBody, streamCallTimeout, func(body io.ReadCloser) error {
+		return HandleStreamingResponse(body, modelUsage, chatModelConfig, OpenAIParserConfig, sender)
 	})
-	if err != nil {
-		return fmt.Errorf("failed to scan response body: %w", err)
-	}
-	if !done && !sawTerminal {
-		return fmt.Errorf("aliyun: stream ended before [DONE] or finish_reason")
-	}
+}
 
-	setSortedToolCallsResult(chatModelConfig, accumulatedToolCalls)
-
-	// Send [DONE] marker for OpenAI compatibility
-	endOfStream := "[DONE]"
-	return sender(&endOfStream, nil)
+// applyQwen3ThinkingDefault ensures enable_thinking=false is sent for qwen3
+// models when it hasn't been explicitly configured. DashScope defaults
+// enable_thinking to true for qwen3 models, which produces reasoning output
+// that RAGFlow doesn't expect in most pipelines. Mirrors Python's
+// chat_model.py default of enable_thinking=False for qwen3.
+func applyQwen3ThinkingDefault(modelName string, reqBody map[string]interface{}) {
+	if !strings.Contains(strings.ToLower(modelName), "qwen3") {
+		return
+	}
+	if _, alreadySet := reqBody["enable_thinking"]; alreadySet {
+		return
+	}
+	reqBody["enable_thinking"] = false
 }
 
 // aliyunToolChoice prevents qwen-flash from repeatedly issuing another tool call
@@ -362,11 +183,11 @@ func aliyunToolChoice(modelName string, messages []Message, configured *string) 
 }
 
 type aliyunEmbeddingResponse struct {
-	Data   []EmbeddingData `json:"data"`
-	Model  string          `json:"model"`
-	Object string          `json:"object"`
-	Usage  aliyunUsage     `json:"usage"`
-	ID     string          `json:"id"`
+	Data   []aliyunEmbeddingData `json:"data"`
+	Model  string                `json:"model"`
+	Object string                `json:"object"`
+	Usage  aliyunUsage           `json:"usage"`
+	ID     string                `json:"id"`
 }
 
 type aliyunEmbeddingData struct {
@@ -435,7 +256,7 @@ func (a *AliyunModel) Embed(ctx context.Context, modelName *string, texts []stri
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Aliyun embeddings API error: %s, body: %s", resp.Status, string(body))
+		return nil, fmt.Errorf("aliyun embeddings API error: %s, body: %s", resp.Status, string(body))
 	}
 
 	var parsed aliyunEmbeddingResponse
@@ -450,6 +271,10 @@ func (a *AliyunModel) Embed(ctx context.Context, modelName *string, texts []stri
 		embeddingData.Index = dataElem.Index
 		embeddings = append(embeddings, embeddingData)
 	}
+	recordResponseUsage(modelUsage, parsed.ID, &TokenUsage{
+		PromptTokens: parsed.Usage.PromptTokens,
+		TotalTokens:  parsed.Usage.TotalTokens,
+	}, "embedding")
 
 	return embeddings, nil
 }
@@ -463,10 +288,14 @@ type aliyunRerankRequest struct {
 }
 
 type aliyunRerankResponse struct {
+	ID      string `json:"id"`
 	Results []struct {
 		Index          int     `json:"index"`
 		RelevanceScore float64 `json:"relevance_score"`
 	} `json:"results"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 func (a *AliyunModel) Rerank(ctx context.Context, modelName *string, query string, documents []string, apiConfig *APIConfig, rerankConfig *RerankConfig, modelUsage *common.ModelUsage) (*RerankResponse, error) {
@@ -489,8 +318,11 @@ func (a *AliyunModel) Rerank(ctx context.Context, modelName *string, query strin
 
 	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(baseURL, "/"), a.baseModel.URLSuffix.Rerank)
 
-	var topN = rerankConfig.TopN
-	if rerankConfig.TopN == 0 {
+	topN := len(documents)
+	if rerankConfig != nil && rerankConfig.TopN > 0 {
+		topN = rerankConfig.TopN
+	}
+	if topN == 0 {
 		topN = len(documents)
 	}
 
@@ -530,15 +362,22 @@ func (a *AliyunModel) Rerank(ctx context.Context, modelName *string, query strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Aliyun rerank API error: %s, body: %s", resp.Status, string(body))
+		return nil, fmt.Errorf("aliyun rerank API error: %s, body: %s", resp.Status, string(body))
 	}
 
-	var rerankResponse RerankResponse
-	if err = json.Unmarshal(body, &rerankResponse); err != nil {
+	var parsed aliyunRerankResponse
+	if err = json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
+	rerankResponse := &RerankResponse{Data: make([]RerankResult, 0, len(parsed.Results))}
+	for _, item := range parsed.Results {
+		rerankResponse.Data = append(rerankResponse.Data, RerankResult{Index: item.Index, RelevanceScore: item.RelevanceScore})
+	}
+	recordResponseUsage(modelUsage, parsed.ID, &TokenUsage{
+		TotalTokens: parsed.Usage.TotalTokens,
+	}, "rerank")
 
-	return &rerankResponse, nil
+	return rerankResponse, nil
 }
 
 // TranscribeAudio transcribe audio
@@ -550,13 +389,104 @@ func (a *AliyunModel) TranscribeAudioWithSender(ctx context.Context, modelName *
 	return fmt.Errorf("%s, no such method", a.Name())
 }
 
+// aliyunTTSDefaultVoice is used when the caller does not specify a voice;
+// DashScope's Qwen TTS models require one.
+const aliyunTTSDefaultVoice = "Cherry"
+
+// newAliyunTTSRequest builds the OpenAI-compatible audio/speech request
+// against DashScope's compatible mode.
+func (a *AliyunModel) newAliyunTTSRequest(ctx context.Context, modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig) (*http.Request, error) {
+	if err := a.baseModel.APIConfigCheck(apiConfig); err != nil {
+		return nil, err
+	}
+	if modelName == nil || *modelName == "" {
+		return nil, fmt.Errorf("model name is required")
+	}
+	if audioContent == nil || *audioContent == "" {
+		return nil, fmt.Errorf("audio content is empty")
+	}
+	if strings.TrimSpace(a.baseModel.URLSuffix.TTS) == "" {
+		return nil, fmt.Errorf("aliyun TTS URL suffix is required")
+	}
+
+	resolvedBaseURL, err := a.baseModel.GetBaseURL(apiConfig)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(resolvedBaseURL, "/"), strings.TrimPrefix(a.baseModel.URLSuffix.TTS, "/"))
+
+	reqBody := map[string]interface{}{
+		"model": *modelName,
+		"input": *audioContent,
+		"voice": aliyunTTSDefaultVoice,
+	}
+	if ttsConfig != nil {
+		for key, value := range ttsConfig.Params {
+			reqBody[key] = value
+		}
+		if ttsConfig.Format != "" {
+			reqBody["response_format"] = ttsConfig.Format
+		}
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	return req, nil
+}
+
 // AudioSpeech convert text to audio
 func (a *AliyunModel) AudioSpeech(ctx context.Context, modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, modelUsage *common.ModelUsage) (*TTSResponse, error) {
-	return nil, fmt.Errorf("%s, no such method", a.Name())
+	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
+	defer cancel()
+
+	req, err := a.newAliyunTTSRequest(ctx, modelName, audioContent, apiConfig, ttsConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := a.baseModel.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("aliyun TTS API error: %s, body: %s", resp.Status, string(body))
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("aliyun TTS API returned empty audio")
+	}
+
+	return &TTSResponse{Audio: body}, nil
 }
 
 func (a *AliyunModel) AudioSpeechWithSender(ctx context.Context, modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
-	return fmt.Errorf("%s, no such method", a.Name())
+	if sender == nil {
+		return fmt.Errorf("sender is required")
+	}
+
+	// DashScope's compatible-mode audio/speech endpoint returns the whole
+	// audio in one response; forward it as a single chunk.
+	resp, err := a.AudioSpeech(ctx, modelName, audioContent, apiConfig, ttsConfig, modelUsage)
+	if err != nil {
+		return err
+	}
+	chunk := string(resp.Audio)
+	return sender(&chunk, nil)
 }
 
 // OCRFile OCR file

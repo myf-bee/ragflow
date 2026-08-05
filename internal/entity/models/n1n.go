@@ -38,7 +38,7 @@ func NewN1NModel(baseURL map[string]string, urlSuffix URLSuffix) *N1NModel {
 		baseModel: BaseModel{
 			BaseURL:    baseURL,
 			URLSuffix:  urlSuffix,
-			httpClient: NewDriverHTTPClient(),
+			httpClient: NewDriverHTTPClient(false),
 		},
 	}
 }
@@ -88,82 +88,12 @@ func newN1NJSONRequest(ctx context.Context, method, endpoint string, payload int
 	return req, nil
 }
 
-type n1nAPIMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
-}
-
-type n1nThinking struct {
-	Type string `json:"type"`
-}
-
-type n1nChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []n1nAPIMessage `json:"messages"`
-	Stream      bool            `json:"stream"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        *[]string       `json:"stop,omitempty"`
-	Thinking    *n1nThinking    `json:"thinking,omitempty"`
-}
-
-func buildN1NChatRequest(modelName string, messages []Message, stream bool, chatModelConfig *ChatConfig) n1nChatRequest {
-	apiMessages := make([]n1nAPIMessage, len(messages))
-	for i, msg := range messages {
-		apiMessages[i] = n1nAPIMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		}
-	}
-	reqBody := n1nChatRequest{
-		Model:    modelName,
-		Messages: apiMessages,
-		Stream:   stream,
-	}
-	if chatModelConfig != nil {
-		reqBody.MaxTokens = chatModelConfig.MaxTokens
-		reqBody.Temperature = chatModelConfig.Temperature
-		reqBody.TopP = chatModelConfig.TopP
-		reqBody.Stop = chatModelConfig.Stop
-		if chatModelConfig.Thinking != nil {
-			if *chatModelConfig.Thinking {
-				reqBody.Thinking = &n1nThinking{Type: "enabled"}
-			} else {
-				reqBody.Thinking = &n1nThinking{Type: "disabled"}
-			}
-		}
-	}
-	return reqBody
-}
-
-type n1nChatChoice struct {
-	Message      n1nChatMessage `json:"message"`
-	Delta        n1nChatDelta   `json:"delta"`
-	FinishReason string         `json:"finish_reason"`
-}
-
-type n1nChatMessage struct {
-	Content          *string `json:"content"`
-	ReasoningContent string  `json:"reasoning_content"`
-}
-
-type n1nChatDelta struct {
-	Content          string `json:"content"`
-	ReasoningContent string `json:"reasoning_content"`
-}
-
-type n1nChatResponse struct {
-	Choices []n1nChatChoice `json:"choices"`
-}
-
 // ChatWithMessages sends a single, non-streaming chat completion
 // against n1n.ai's /v1/chat/completions endpoint.
 func (n *N1NModel) ChatWithMessages(ctx context.Context, modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, modelUsage *common.ModelUsage) (*ChatResponse, error) {
 	if err := n.baseModel.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
-	apiKey := *apiConfig.ApiKey
 	if strings.TrimSpace(modelName) == "" {
 		return nil, fmt.Errorf("model name is required")
 	}
@@ -176,51 +106,21 @@ func (n *N1NModel) ChatWithMessages(ctx context.Context, modelName string, messa
 		return nil, err
 	}
 
-	reqBody := buildN1NChatRequest(modelName, messages, false, chatModelConfig)
+	reqBody := buildRequestBody(chatModelConfig, modelName, messages, false)
+	if chatModelConfig != nil && chatModelConfig.Thinking != nil {
+		thinkingType := "disabled"
+		if *chatModelConfig.Thinking {
+			thinkingType = "enabled"
+		}
+		reqBody["thinking"] = map[string]interface{}{"type": thinkingType}
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, nonStreamCallTimeout)
-	defer cancel()
-
-	req, err := newN1NJSONRequest(ctx, "POST", endpoint, reqBody, apiKey)
+	body, err := n.baseModel.doRequest(ctx, endpoint, apiConfig, reqBody, nonStreamCallTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := n.baseModel.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("n1n chat API error: %s, body: %s", resp.Status, string(body))
-	}
-
-	var parsed n1nChatResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
-	if parsed.Choices[0].Message.Content == nil {
-		return nil, fmt.Errorf("invalid content format")
-	}
-
-	content := *parsed.Choices[0].Message.Content
-	chatResp := &ChatResponse{
-		Answer: &content,
-	}
-	if parsed.Choices[0].Message.ReasoningContent != "" {
-		reasonContent := parsed.Choices[0].Message.ReasoningContent
-		chatResp.ReasonContent = &reasonContent
-	}
-	return chatResp, nil
+	return HandleNonStreamingResponse(body, modelUsage, chatModelConfig, OpenAIParserConfig)
 }
 
 // ChatStreamlyWithSender sends a streaming chat completion.
@@ -238,7 +138,6 @@ func (n *N1NModel) ChatStreamlyWithSender(ctx context.Context, modelName string,
 	if len(messages) == 0 {
 		return fmt.Errorf("messages is empty")
 	}
-	apiKey := *apiConfig.ApiKey
 
 	endpoint, err := n.endpointURL(n1nRegion(apiConfig), n.baseModel.URLSuffix.Chat)
 	if err != nil {
@@ -249,59 +148,19 @@ func (n *N1NModel) ChatStreamlyWithSender(ctx context.Context, modelName string,
 		return fmt.Errorf("stream must be true in ChatStreamlyWithSender")
 	}
 
-	reqBody := buildN1NChatRequest(modelName, messages, true, chatModelConfig)
-
-	req, err := newN1NJSONRequest(ctx, "POST", endpoint, reqBody, apiKey)
-	if err != nil {
-		return err
+	reqBody := buildRequestBody(chatModelConfig, modelName, messages, true)
+	reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
+	if chatModelConfig != nil && chatModelConfig.Thinking != nil {
+		thinkingType := "disabled"
+		if *chatModelConfig.Thinking {
+			thinkingType = "enabled"
+		}
+		reqBody["thinking"] = map[string]interface{}{"type": thinkingType}
 	}
 
-	resp, err := n.baseModel.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("n1n chat stream API error: %s, body: %s", resp.Status, string(body))
-	}
-
-	sawTerminal := false
-	done, err := ParseSSEStream[n1nChatResponse](resp.Body, func(event n1nChatResponse) error {
-		if len(event.Choices) == 0 {
-			return nil
-		}
-		choice := event.Choices[0]
-		if choice.Delta.ReasoningContent != "" {
-			r := choice.Delta.ReasoningContent
-			if err := sender(nil, &r); err != nil {
-				return err
-			}
-		}
-		if choice.Delta.Content != "" {
-			c := choice.Delta.Content
-			if err := sender(&c, nil); err != nil {
-				return err
-			}
-		}
-		if choice.FinishReason != "" {
-			sawTerminal = true
-		}
-		return nil
+	return n.baseModel.doStreamRequest(ctx, endpoint, apiConfig, reqBody, streamCallTimeout, func(body io.ReadCloser) error {
+		return HandleStreamingResponse(body, modelUsage, chatModelConfig, OpenAIParserConfig, sender)
 	})
-	if err != nil {
-		return fmt.Errorf("failed to scan response body: %w", err)
-	}
-	if !done && !sawTerminal {
-		return fmt.Errorf("n1n: stream ended before [DONE] or finish_reason")
-	}
-
-	endOfStream := "[DONE]"
-	if err := sender(&endOfStream, nil); err != nil {
-		return err
-	}
-	return nil
 }
 
 type n1nEmbeddingData struct {

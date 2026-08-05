@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -53,6 +55,7 @@ func newMistralForTest(baseURL string) *MistralModel {
 			Chat:      "chat/completions",
 			Models:    "models",
 			Embedding: "embeddings",
+			ASR:       "audio/transcriptions",
 		},
 	)
 }
@@ -65,6 +68,7 @@ func TestMistralName(t *testing.T) {
 }
 
 func TestMistralChatHappyPath(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, body map[string]interface{}, w http.ResponseWriter) {
 		if body["model"] != "mistral-large-latest" {
@@ -103,6 +107,7 @@ func TestMistralChatHappyPath(t *testing.T) {
 }
 
 func TestMistralChatPropagatesConfig(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, body map[string]interface{}, w http.ResponseWriter) {
 		if body["max_tokens"] != float64(64) {
@@ -141,6 +146,7 @@ func TestMistralChatPropagatesConfig(t *testing.T) {
 }
 
 func TestMistralChatRequiresAPIKey(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	_, err := m.ChatWithMessages(ctx, "mistral-large-latest", []Message{{Role: "user", Content: "x"}}, &APIConfig{}, nil, nil)
@@ -155,6 +161,7 @@ func TestMistralChatRequiresAPIKey(t *testing.T) {
 }
 
 func TestMistralChatRequiresMessages(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	apiKey := "test-key"
@@ -165,6 +172,7 @@ func TestMistralChatRequiresMessages(t *testing.T) {
 }
 
 func TestMistralChatRejectsHTTPError(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, body map[string]interface{}, w http.ResponseWriter) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -181,6 +189,7 @@ func TestMistralChatRejectsHTTPError(t *testing.T) {
 }
 
 func TestMistralChatFallsBackToDefaultOnEmptyRegion(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// Empty *Region pointer must fall back to the "default" entry, not
 	// be treated as an explicit "" region (which would miss the lookup).
@@ -204,6 +213,7 @@ func TestMistralChatFallsBackToDefaultOnEmptyRegion(t *testing.T) {
 }
 
 func TestMistralListModelsFallsBackToDefaultOnEmptyRegion(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/models", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []map[string]interface{}{{"id": "x"}}})
@@ -219,6 +229,7 @@ func TestMistralListModelsFallsBackToDefaultOnEmptyRegion(t *testing.T) {
 }
 
 func TestMistralStreamRequiresSender(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	apiKey := "test-key"
@@ -231,6 +242,7 @@ func TestMistralStreamRequiresSender(t *testing.T) {
 }
 
 func TestMistralChatRejectsUnknownRegion(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	apiKey := "test-key"
@@ -244,6 +256,7 @@ func TestMistralChatRejectsUnknownRegion(t *testing.T) {
 }
 
 func TestMistralStreamHappyPath(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
@@ -299,6 +312,7 @@ func TestMistralStreamHappyPath(t *testing.T) {
 }
 
 func TestMistralStreamRejectsExplicitFalse(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	apiKey := "test-key"
@@ -316,6 +330,7 @@ func TestMistralStreamRejectsExplicitFalse(t *testing.T) {
 }
 
 func TestMistralStreamFailsWithoutTerminal(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// Body closes before [DONE] or a finish_reason -> driver must complain
 	// instead of pretending the stream finished cleanly.
@@ -338,6 +353,7 @@ func TestMistralStreamFailsWithoutTerminal(t *testing.T) {
 }
 
 func TestMistralListModelsHappyPath(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/models", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -362,6 +378,7 @@ func TestMistralListModelsHappyPath(t *testing.T) {
 }
 
 func TestMistralListModelsRequiresAPIKey(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	if _, err := m.ListModels(ctx, &APIConfig{}); err == nil || !strings.Contains(err.Error(), "api key is required") {
@@ -370,6 +387,7 @@ func TestMistralListModelsRequiresAPIKey(t *testing.T) {
 }
 
 func TestMistralCheckConnectionDelegatesToListModels(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// 200 -> CheckConnection succeeds; 401 -> CheckConnection propagates.
 	okSrv := newMistralServer(t, "/models", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
@@ -393,6 +411,7 @@ func TestMistralCheckConnectionDelegatesToListModels(t *testing.T) {
 }
 
 func TestMistralBalanceReturnsNoSuchMethod(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	_, err := m.Balance(ctx, &APIConfig{})
@@ -402,6 +421,7 @@ func TestMistralBalanceReturnsNoSuchMethod(t *testing.T) {
 }
 
 func TestMistralRerankReturnsNoSuchMethod(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	q := "mistral-large-latest"
@@ -411,7 +431,107 @@ func TestMistralRerankReturnsNoSuchMethod(t *testing.T) {
 	}
 }
 
+func TestMistralTranscribeAudio(t *testing.T) {
+	withSSRFBypass(t)
+	ctx := t.Context()
+	audioPath := filepath.Join(t.TempDir(), "sample.wav")
+	if err := os.WriteFile(audioPath, []byte("fake-audio"), 0o600); err != nil {
+		t.Fatalf("write audio file: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/audio/transcriptions" {
+			t.Errorf("path=%s, want /audio/transcriptions", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method=%s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization=%q, want Bearer test-key", got)
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Errorf("Content-Type=%q, want multipart/form-data", r.Header.Get("Content-Type"))
+		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("Accept=%q, want application/json", got)
+		}
+
+		reader, err := r.MultipartReader()
+		if err != nil {
+			t.Fatalf("MultipartReader: %v", err)
+		}
+		fields := make(map[string]string)
+		var fileName, fileBody string
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("NextPart: %v", err)
+			}
+			data, err := io.ReadAll(part)
+			if err != nil {
+				t.Fatalf("ReadAll part: %v", err)
+			}
+			if part.FormName() == "file" {
+				fileName = part.FileName()
+				fileBody = string(data)
+				continue
+			}
+			fields[part.FormName()] = string(data)
+		}
+		if fileName != "sample.wav" {
+			t.Errorf("file name=%q, want sample.wav", fileName)
+		}
+		if fileBody != "fake-audio" {
+			t.Errorf("file body=%q, want fake-audio", fileBody)
+		}
+		if fields["model"] != "voxtral-mini-latest" {
+			t.Errorf("model=%q, want voxtral-mini-latest", fields["model"])
+		}
+		if fields["language"] != "en" {
+			t.Errorf("language=%q, want en", fields["language"])
+		}
+		if fields["diarize"] != "true" {
+			t.Errorf("diarize=%q, want true", fields["diarize"])
+		}
+		if fields["timestamp_granularities"] != `["segment","word"]` {
+			t.Errorf("timestamp_granularities=%q", fields["timestamp_granularities"])
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"language": "en",
+			"model":    "voxtral-mini-latest",
+			"text":     "hello world",
+		})
+	}))
+	defer srv.Close()
+
+	apiKey := " test-key "
+	modelName := " voxtral-mini-latest "
+	resp, err := newMistralForTest(srv.URL).TranscribeAudio(
+		ctx,
+		&modelName,
+		&audioPath,
+		&APIConfig{ApiKey: &apiKey},
+		&ASRConfig{Params: map[string]interface{}{
+			"language":                "en",
+			"diarize":                 true,
+			"timestamp_granularities": []string{"segment", "word"},
+		}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("TranscribeAudio: %v", err)
+	}
+	if resp.Text != "hello world" {
+		t.Fatalf("Text=%q, want hello world", resp.Text)
+	}
+}
+
 func TestMistralUnsupportedDefaultsReturnNoSuchMethod(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	modelName := "mistral-large-latest"
@@ -420,16 +540,8 @@ func TestMistralUnsupportedDefaultsReturnNoSuchMethod(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"TranscribeAudio", func() error {
-			_, err := m.TranscribeAudio(ctx, &modelName, nil, &APIConfig{}, nil, nil)
-			return err
-		}},
 		{"TranscribeAudioWithSender", func() error {
 			return m.TranscribeAudioWithSender(ctx, &modelName, nil, &APIConfig{}, nil, nil, nil)
-		}},
-		{"AudioSpeech", func() error {
-			_, err := m.AudioSpeech(ctx, &modelName, nil, &APIConfig{}, nil, nil)
-			return err
 		}},
 		{"AudioSpeechWithSender", func() error {
 			return m.AudioSpeechWithSender(ctx, &modelName, nil, &APIConfig{}, nil, nil, nil)
@@ -456,6 +568,7 @@ func TestMistralUnsupportedDefaultsReturnNoSuchMethod(t *testing.T) {
 }
 
 func TestMistralEmbedHappyPath(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/embeddings", func(t *testing.T, body map[string]interface{}, w http.ResponseWriter) {
 		if body["model"] != "mistral-embed" {
@@ -491,6 +604,7 @@ func TestMistralEmbedHappyPath(t *testing.T) {
 }
 
 func TestMistralEmbedReordersByIndex(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// Upstream returns the three vectors in shuffled order. The driver
 	// must reorder them so the slot at position i corresponds to input i.
@@ -520,6 +634,7 @@ func TestMistralEmbedReordersByIndex(t *testing.T) {
 }
 
 func TestMistralEmbedEmptyInputShortCircuits(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// Empty input must NOT make an HTTP call; the test fails the request
 	// rather than the assertion if it does.
@@ -542,6 +657,7 @@ func TestMistralEmbedEmptyInputShortCircuits(t *testing.T) {
 }
 
 func TestMistralEmbedRequiresAPIKey(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	model := "mistral-embed"
@@ -552,6 +668,7 @@ func TestMistralEmbedRequiresAPIKey(t *testing.T) {
 }
 
 func TestMistralEmbedRequiresModelName(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	m := newMistralForTest("http://unused")
 	apiKey := "test-key"
@@ -567,6 +684,7 @@ func TestMistralEmbedRequiresModelName(t *testing.T) {
 }
 
 func TestMistralEmbedRejectsDuplicateIndex(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// A malformed upstream that repeats data[*].index would silently
 	// overwrite the earlier vector; the driver must fail loudly instead.
@@ -590,6 +708,7 @@ func TestMistralEmbedRejectsDuplicateIndex(t *testing.T) {
 }
 
 func TestMistralEmbedRejectsOutOfRangeIndex(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/embeddings", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -610,6 +729,7 @@ func TestMistralEmbedRejectsOutOfRangeIndex(t *testing.T) {
 }
 
 func TestMistralEmbedRejectsMissingSlot(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	// Upstream returns only one of the two requested embeddings.
 	srv := newMistralServer(t, "/embeddings", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
@@ -631,6 +751,7 @@ func TestMistralEmbedRejectsMissingSlot(t *testing.T) {
 }
 
 func TestMistralEmbedRejectsHTTPError(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/embeddings", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -652,6 +773,7 @@ func TestMistralEmbedRejectsHTTPError(t *testing.T) {
 // Regression net: the existing string-content path stays green for every
 // non-reasoning Mistral model.
 func TestMistralChatHandlesStringContent(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -687,6 +809,7 @@ func TestMistralChatHandlesStringContent(t *testing.T) {
 // from api.mistral.ai/v1/chat/completions against magistral-medium-latest
 // with the prompt "When do two trains meet?".
 func TestMistralChatExtractsReasoningFromStructuredContent(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -729,6 +852,7 @@ func TestMistralChatExtractsReasoningFromStructuredContent(t *testing.T) {
 // magistral with a trivial answer that needed no reasoning returns the
 // structured shape with only a `text` part. ReasonContent must be empty.
 func TestMistralChatHandlesStructuredContentWithoutThinking(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -762,6 +886,7 @@ func TestMistralChatHandlesStructuredContentWithoutThinking(t *testing.T) {
 // the parser forward-compatible with new Mistral content variants
 // (audio chunks, citations, etc.) that ragflow doesn't surface yet.
 func TestMistralChatIgnoresUnknownContentPartTypes(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	srv := newMistralServer(t, "/chat/completions", func(t *testing.T, _ map[string]interface{}, w http.ResponseWriter) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -787,65 +912,5 @@ func TestMistralChatIgnoresUnknownContentPartTypes(t *testing.T) {
 	}
 	if *resp.Answer != "Hello" {
 		t.Errorf("Answer=%q want %q", *resp.Answer, "Hello")
-	}
-}
-
-// Direct unit coverage of the helper, including the nil and bad-type
-// edge cases that won't surface in the integration tests above.
-func TestExtractMistralContent(t *testing.T) {
-	tests := []struct {
-		name       string
-		input      interface{}
-		wantAns    string
-		wantReason string
-		wantErr    bool
-	}{
-		{"plain string", "hi", "hi", "", false},
-		{"empty string", "", "", "", false},
-		{"nil", nil, "", "", false},
-		{"empty array", []interface{}{}, "", "", false},
-		{
-			"text only",
-			[]interface{}{
-				map[string]interface{}{"type": "text", "text": "a"},
-				map[string]interface{}{"type": "text", "text": "b"},
-			},
-			"ab", "", false,
-		},
-		{
-			"thinking then text",
-			[]interface{}{
-				map[string]interface{}{
-					"type": "thinking",
-					"thinking": []interface{}{
-						map[string]interface{}{"type": "text", "text": "why "},
-						map[string]interface{}{"type": "text", "text": "this"},
-					},
-				},
-				map[string]interface{}{"type": "text", "text": "answer"},
-			},
-			"answer", "why this", false,
-		},
-		{"unknown root type", 42, "", "", true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ans, reason, err := extractMistralContent(tc.input)
-			if tc.wantErr {
-				if err == nil {
-					t.Errorf("want error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("unexpected err: %v", err)
-			}
-			if ans != tc.wantAns {
-				t.Errorf("answer=%q want %q", ans, tc.wantAns)
-			}
-			if reason != tc.wantReason {
-				t.Errorf("reason=%q want %q", reason, tc.wantReason)
-			}
-		})
 	}
 }

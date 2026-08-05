@@ -148,11 +148,11 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 	}
 	searchResult, err := s.Search(ctx, searchReq)
 	if err != nil {
-		return nil, fmt.Errorf("Search failed: %w", err)
+		return nil, fmt.Errorf("search failed: %w", err)
 	}
 
 	// Prune deleted chunks
-	searchResult, err = s.PruneDeletedChunks(searchResult)
+	searchResult, err = s.PruneDeletedChunks(ctx, searchResult)
 	if err != nil {
 		return nil, fmt.Errorf("PruneDeletedChunks failed: %w", err)
 	}
@@ -166,19 +166,19 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 	tkWeight := tkWeightOrig
 	vtWeight := vtWeightOrig
 	qb := GetQueryBuilder()
-	useInfinity := engine.GetEngineType() != engine.EngineElasticsearch
+	useInfinity := engine.GetEngineType() == "infinity"
 	useOceanBase := false // TODO: add OceanBase detection when supported
 
 	// For ES path: call GetScores() for second-pass KNN to get clean cosine similarity
 	// For Infinity path: use _score directly (scores already normalized during fusion)
 	// For OceanBase path: extract vectors and compute locally
 	var sim []float64
-	var term_similarity []float64
-	var vector_similarity []float64
+	var termSimilarity []float64
+	var vectorSimilarity []float64
 
 	if req.RerankModel != nil && searchResult.Total > 0 {
 		// External rerank model path - use RerankByModel
-		sim, term_similarity, vector_similarity = RerankByModel(
+		sim, termSimilarity, vectorSimilarity = RerankByModel(
 			ctx,
 			req.RerankModel,
 			searchResult.Chunks,
@@ -209,16 +209,16 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 				sim[i] = 0.0
 			}
 		}
-		term_similarity = sim
-		vector_similarity = sim
+		termSimilarity = sim
+		vectorSimilarity = sim
 	} else if useOceanBase {
 		// OceanBase: extract vectors and compute locally (not implemented)
 		sim = make([]float64, len(searchResult.IDs))
 		for i := range searchResult.IDs {
 			sim[i] = 0.0
 		}
-		term_similarity = sim
-		vector_similarity = sim
+		termSimilarity = sim
+		vectorSimilarity = sim
 	} else {
 		// ES PATH: Two-pass KNN approach for clean cosine similarity scores
 		//
@@ -248,7 +248,7 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 		if err != nil {
 			common.Warn("KNNScores failed for ES, falling back to local computation", zap.Error(err))
 			// Fallback: RerankStandard computes vector similarity locally (requires shipping vectors)
-			sim, term_similarity, vector_similarity = RerankStandard(
+			sim, termSimilarity, vectorSimilarity = RerankStandard(
 				searchResult.Chunks,
 				nil, // keywords computed internally
 				searchResult.QueryVector,
@@ -266,7 +266,7 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 
 			// RERANK: Combine token + vector + rank feature similarities
 			// Matches Python's rerank_with_knn(): sim = tkweight * tksim + vtweight * vtsim + rank_fea
-			sim, term_similarity, vector_similarity = RerankWithKNN(
+			sim, termSimilarity, vectorSimilarity = RerankWithKNN(
 				searchResult.Chunks,
 				searchResult.IDs,
 				searchResult.Field,
@@ -414,8 +414,8 @@ func (s *RetrievalService) Retrieval(ctx context.Context, req *RetrievalRequest)
 			resultChunk["row_id"] = v
 		}
 		resultChunk["similarity"] = sim[i]
-		resultChunk["term_similarity"] = term_similarity[i]
-		resultChunk["vector_similarity"] = vector_similarity[i]
+		resultChunk["term_similarity"] = termSimilarity[i]
+		resultChunk["vector_similarity"] = vectorSimilarity[i]
 
 		// Always set these fields even if empty, to match Python response format
 		if v, ok := chunk["important_kwd"]; ok {
@@ -573,10 +573,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 	if _, ok := filters["available_int"]; !ok {
 		filters["available_int"] = 1
 	}
-	pg := req.Page - 1
-	if pg < 0 {
-		pg = 0
-	}
+	pg := max(req.Page-1, 0)
 	topk := req.Top
 	if topk <= 0 {
 		topk = 1024
@@ -624,7 +621,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 		searchRequest.MatchExprs = []interface{}{}
 		engineResult, err = s.docEngine.Search(ctx, searchRequest)
 		if err != nil {
-			return nil, fmt.Errorf("Search failed: %w", err)
+			return nil, fmt.Errorf("search failed: %w", err)
 		}
 	} else {
 		// Non-empty question
@@ -644,7 +641,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 
 			engineResult, err = s.docEngine.Search(ctx, &searchRequestWithRank)
 			if err != nil {
-				return nil, fmt.Errorf("Search failed: %w", err)
+				return nil, fmt.Errorf("search failed: %w", err)
 			}
 			queryVector = nil
 		} else {
@@ -668,7 +665,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 			// Build source with vector column for ES
 			searchSrc := make([]string, len(searchRequest.SelectFields))
 			copy(searchSrc, searchRequest.SelectFields)
-			if engine.GetEngineType() == engine.EngineElasticsearch {
+			if engine.GetEngineType() == "elasticsearch" {
 				searchSrc = append(searchSrc, matchDense.VectorColumnName)
 			}
 
@@ -678,7 +675,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 
 			engineResult, err = s.docEngine.Search(ctx, searchRequest)
 			if err != nil {
-				return nil, fmt.Errorf("Search failed: %w", err)
+				return nil, fmt.Errorf("search failed: %w", err)
 			}
 			// If result is empty, retry with relaxed conditions
 			if engineResult.Total == 0 {
@@ -702,7 +699,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 
 					engineResult, err = s.docEngine.Search(ctx, searchRequest)
 					if err != nil {
-						return nil, fmt.Errorf("Search retry failed: %w", err)
+						return nil, fmt.Errorf("search retry failed: %w", err)
 					}
 				} else {
 					// No doc_id filter — retry with lower min_match (0.1 vs default 0.3)
@@ -716,7 +713,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *RetrievalSearchReque
 
 					engineResult, err = s.docEngine.Search(ctx, searchRequest)
 					if err != nil {
-						return nil, fmt.Errorf("Search retry failed: %w", err)
+						return nil, fmt.Errorf("search retry failed: %w", err)
 					}
 				}
 			}
@@ -973,7 +970,7 @@ func RetrievalByChildren(chunks []map[string]interface{}, tenantIDs []string, do
 }
 
 // PruneDeletedChunks removes chunks whose documents no longer exist
-func (s *RetrievalService) PruneDeletedChunks(result *RetrievalSearchResult) (*RetrievalSearchResult, error) {
+func (s *RetrievalService) PruneDeletedChunks(ctx context.Context, result *RetrievalSearchResult) (*RetrievalSearchResult, error) {
 	if s.documentDAO == nil {
 		return nil, fmt.Errorf("documentDAO is not initialized")
 	}
@@ -1000,7 +997,7 @@ func (s *RetrievalService) PruneDeletedChunks(result *RetrievalSearchResult) (*R
 	}
 
 	// Get existing document IDs
-	docs, err := s.documentDAO.GetByIDs(uniqueDocIDs)
+	docs, err := s.documentDAO.GetByIDs(ctx, dao.DB, uniqueDocIDs)
 	if err != nil {
 		return nil, fmt.Errorf("GetByIDs failed: %w", err)
 	}
