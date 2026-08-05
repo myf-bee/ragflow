@@ -253,6 +253,8 @@ jobs:
           fi
 
       - name: Build ragflow:nightly
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
           GITEE_TOKEN_FILE="$(mktemp)"
@@ -732,6 +734,8 @@ jobs:
           fi
 
       - name: Build ragflow:nightly
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
           GITEE_TOKEN_FILE="$(mktemp)"
