@@ -215,13 +215,16 @@ jobs:
                   has_go=true
                   has_python=true
                   ;;
+                # DeepDoc native backend (Go inference layer, C++ static lib, pinned testdata).
+                # Must come BEFORE the generic "*.go"/"*.py" rules, otherwise deepdoc/*.go
+                # would be caught by "*.go" first and never set has_native_deepdoc.
+                internal/deepdoc/**|internal/binding/cpp/**|internal/deepdoc/native/testdata.ref)
+                  has_go=true
+                  has_native_deepdoc=true
+                  ;;
                 *.go|go.mod|go.sum)                       has_go=true ;;
                 *.py|pyproject.toml|requirements*.txt)    has_python=true ;;
                 web/*)                                    has_web=true ;;
-                # DeepDoc native backend (Go inference layer, C++ static lib, pinned testdata).
-                internal/deepdoc/**|internal/binding/cpp/**|internal/deepdoc/native/testdata.ref)
-                  has_native_deepdoc=true
-                  ;;
               esac
             done <<< "$CHANGED_FILES"
 
