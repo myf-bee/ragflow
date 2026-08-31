@@ -13,7 +13,7 @@ package native
 //
 // Keeping one implementation avoids two diverging copies of the matching math.
 // These are pure comparison helpers with no runtime model dependency, so the
-// file is gated by `cgo` only (not `integration`): the manual-tier
+// file is gated by `cgo` only (not `integration`): the manual-tier test
 // raster-alignment tests reuse them without pulling in the integration tag.
 
 import (

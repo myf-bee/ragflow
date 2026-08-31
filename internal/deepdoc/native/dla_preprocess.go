@@ -8,7 +8,7 @@ package native
 // bilinearResize. This is geometrically faithful to deepdoc's cv2 pipeline but
 // NOT bit-exact: the Go decoder and bilinear sampler yield slightly different
 // pixels, which propagate into box coordinates (the "pure-Go floor", ~3px on
-// the expanded fixtures). This is the only DLA build.
+// the expanded fixtures). This is the only DLA build. test
 
 // dlaPreprocess letterboxes the image into the 1024 canvas and returns the CHW
 // blob plus the scale factor. See dlaLetterbox / dlaScaleFactor for details.
