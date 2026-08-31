@@ -215,13 +215,16 @@ jobs:
                   has_go=true
                   has_python=true
                   ;;
+                # DeepDoc native backend (Go inference layer, C++ static lib, pinned testdata).
+                # Must come BEFORE the generic "*.go"/"*.py" rules, otherwise deepdoc/*.go
+                # would be caught by "*.go" first and never set has_native_deepdoc.
+                internal/deepdoc/**|internal/binding/cpp/**|internal/deepdoc/native/testdata.ref)
+                  has_go=true
+                  has_native_deepdoc=true
+                  ;;
                 *.go|go.mod|go.sum)                       has_go=true ;;
                 *.py|pyproject.toml|requirements*.txt)    has_python=true ;;
                 web/*)                                    has_web=true ;;
-                # DeepDoc native backend (Go inference layer, C++ static lib, pinned testdata).
-                internal/deepdoc/**|internal/binding/cpp/**|internal/deepdoc/native/testdata.ref)
-                  has_native_deepdoc=true
-                  ;;
               esac
             done <<< "$CHANGED_FILES"
 
@@ -250,7 +253,7 @@ jobs:
           echo "has_web_changes=${has_web}"       >> $GITHUB_OUTPUT
           echo "has_native_deepdoc_changes=${has_native_deepdoc}" >> $GITHUB_OUTPUT
           echo "api_proxy_schemes=${api_proxy_schemes}" >> $GITHUB_OUTPUT
-          echo "Go: ${has_go}, Python: ${has_python}, Web: ${has_web}, proxy schemes: ${api_proxy_schemes}"
+          echo "Go: ${has_go}, Python: ${has_python}, Web: ${has_web}, Native DeepDoc: ${has_native_deepdoc}, proxy schemes: ${api_proxy_schemes}"
 
       - name: Prepare Python test environment
         if: steps.detect_changes.outputs.has_python_changes == 'true'
