@@ -250,7 +250,7 @@ jobs:
           echo "has_web_changes=${has_web}"       >> $GITHUB_OUTPUT
           echo "has_native_deepdoc_changes=${has_native_deepdoc}" >> $GITHUB_OUTPUT
           echo "api_proxy_schemes=${api_proxy_schemes}" >> $GITHUB_OUTPUT
-          echo "Go: ${has_go}, Python: ${has_python}, Web: ${has_web}, proxy schemes: ${api_proxy_schemes}"
+          echo "Go: ${has_go}, Python: ${has_python}, Web: ${has_web}, Native DeepDoc: ${has_native_deepdoc}, proxy schemes: ${api_proxy_schemes}"
 
       - name: Prepare Python test environment
         if: steps.detect_changes.outputs.has_python_changes == 'true'
