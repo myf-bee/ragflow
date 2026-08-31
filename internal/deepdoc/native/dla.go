@@ -6,7 +6,7 @@ package native
 //
 // Ports deepdoc/vision/layout_recognizer.py LayoutRecognizer4YOLOv10 and
 // deepdoc/server/adapters/dla_adapter.py. Self-contained: owns its
-// preprocessing, inference, postprocessing, and wire encoding.
+// preprocessing, inference, postprocessing, and wire encoding. test
 
 import (
 	"context"
