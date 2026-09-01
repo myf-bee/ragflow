@@ -417,7 +417,7 @@ jobs:
           # Pass the Gitee personal access token to the Docker build as a BuildKit secret
           # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
           GITEE_TOKEN_FILE="$(mktemp)"
-          printf '%s' '${GITEE_TOKEN}' > "${GITEE_TOKEN_FILE}"
+          printf '%s' "${GITEE_TOKEN}" > "${GITEE_TOKEN_FILE}"
           # Pick the Dockerfile matching the API proxy scheme:
           #   - go  -> Dockerfile_go  (Go-native image)
           #   - *   -> Dockerfile_ci  (Python/legacy image)
@@ -1074,7 +1074,7 @@ jobs:
           # Pass the Gitee personal access token to the Docker build as a BuildKit secret
           # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
           GITEE_TOKEN_FILE="$(mktemp)"
-          printf '%s' '${GITEE_TOKEN }' > "${GITEE_TOKEN_FILE}"
+          printf '%s' "${GITEE_TOKEN }" > "${GITEE_TOKEN_FILE}"
           # Pick the Dockerfile matching the API proxy scheme:
           #   - go  -> Dockerfile_go  (Go-native image)
           #   - *   -> Dockerfile_ci  (Python/legacy image)
