@@ -407,11 +407,19 @@ jobs:
           # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
           GITEE_TOKEN_FILE="$(mktemp)"
           printf '%s' '${GITEE_TOKEN}' > "${GITEE_TOKEN_FILE}"
+          # Pick the Dockerfile matching the API proxy scheme:
+          #   - go  -> Dockerfile_go  (Go-native image)
+          #   - *   -> Dockerfile_ci  (Python/legacy image)
+          if [ "${API_PROXY_SCHEME}" = "go" ]; then
+            DOCKERFILE=Dockerfile_go
+          else
+            DOCKERFILE=Dockerfile_ci
+          fi
           (
             flock -w 10800 9 || { echo "Timed out waiting for the shared Docker build slot" >&2; exit 1; }
-            echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME}"
+            echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME} (dockerfile=${DOCKERFILE})"
             ##sudo docker pull ubuntu:24.04
-            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f Dockerfile_ci -t ${RAGFLOW_IMAGE} .
+            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f "${DOCKERFILE}" -t ${RAGFLOW_IMAGE} .
           ) 9>"${BUILD_LOCK_FILE}"
           rm -f "${GITEE_TOKEN_FILE}"
 
@@ -663,9 +671,14 @@ jobs:
 
       - name: Start ragflow:nightly for Infinity
         run: |
-          sudo docker compose -f docker/docker-compose.yml -p ${COMPOSE_PROJECT_NAME} down -v || true
+          if [ "${API_PROXY_SCHEME}" = "go" ]; then
+            COMPOSE_FILE=docker/docker-compose-go.yml
+          else
+            COMPOSE_FILE=docker/docker-compose.yml
+          fi
+          sudo docker compose -f "${COMPOSE_FILE}" -p ${COMPOSE_PROJECT_NAME} down -v || true
           sudo docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" -q | xargs -r sudo docker rm -f
-          sudo docker compose -f docker/docker-compose.yml -p ${COMPOSE_PROJECT_NAME} up -d
+          sudo docker compose -f "${COMPOSE_FILE}" -p ${COMPOSE_PROJECT_NAME} up -d
 
       - name: Run sdk tests against Infinity
         if: env.API_PROXY_SCHEME == 'python'
@@ -876,8 +889,13 @@ jobs:
       - name: Stop ragflow:nightly for Infinity
         if: ${{ always() }}
         run: |
+          if [ "${API_PROXY_SCHEME}" = "go" ]; then
+            COMPOSE_FILE=docker/docker-compose-go.yml
+          else
+            COMPOSE_FILE=docker/docker-compose.yml
+          fi
           # Sometimes `docker compose down` fail due to hang container, heavy load etc. Need to remove such containers to release resources(for example, listen ports).
-          sudo docker compose -f docker/docker-compose.yml -p ${COMPOSE_PROJECT_NAME} down -v || true
+          sudo docker compose -f "${COMPOSE_FILE}" -p ${COMPOSE_PROJECT_NAME} down -v || true
           sudo docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" -q | xargs -r sudo docker rm -f
           if [[ -n ${RAGFLOW_IMAGE} ]]; then
             sudo docker rmi -f ${RAGFLOW_IMAGE}
@@ -1027,11 +1045,19 @@ jobs:
           # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
           GITEE_TOKEN_FILE="$(mktemp)"
           printf '%s' '${GITEE_TOKEN }' > "${GITEE_TOKEN_FILE}"
+          # Pick the Dockerfile matching the API proxy scheme:
+          #   - go  -> Dockerfile_go  (Go-native image)
+          #   - *   -> Dockerfile_ci  (Python/legacy image)
+          if [ "${API_PROXY_SCHEME}" = "go" ]; then
+            DOCKERFILE=Dockerfile_go
+          else
+            DOCKERFILE=Dockerfile_ci
+          fi
           (
             flock -w 10800 9 || { echo "Timed out waiting for the shared Docker build slot" >&2; exit 1; }
-            echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME}"
+            echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME} (dockerfile=${DOCKERFILE})"
             ##sudo docker pull ubuntu:24.04
-            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f Dockerfile_ci -t ${RAGFLOW_IMAGE} .
+            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f "${DOCKERFILE}" -t ${RAGFLOW_IMAGE} .
           ) 9>"${BUILD_LOCK_FILE}"
           rm -f "${GITEE_TOKEN_FILE}"
 
@@ -1283,9 +1309,14 @@ jobs:
 
       - name: Start ragflow:nightly for Elasticsearch
         run: |
-          sudo docker compose -f docker/docker-compose.yml -p ${COMPOSE_PROJECT_NAME} down -v || true
+          if [ "${API_PROXY_SCHEME}" = "go" ]; then
+            COMPOSE_FILE=docker/docker-compose-go.yml
+          else
+            COMPOSE_FILE=docker/docker-compose.yml
+          fi
+          sudo docker compose -f "${COMPOSE_FILE}" -p ${COMPOSE_PROJECT_NAME} down -v || true
           sudo docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" -q | xargs -r sudo docker rm -f
-          sudo docker compose -f docker/docker-compose.yml -p ${COMPOSE_PROJECT_NAME} up -d
+          sudo docker compose -f "${COMPOSE_FILE}" -p ${COMPOSE_PROJECT_NAME} up -d
 
       - name: Run sdk tests against Elasticsearch
         if: env.API_PROXY_SCHEME == 'python'
@@ -1491,8 +1522,13 @@ jobs:
       - name: Stop ragflow:nightly for Elasticsearch
         if: ${{ always() }}
         run: |
+          if [ "${API_PROXY_SCHEME}" = "go" ]; then
+            COMPOSE_FILE=docker/docker-compose-go.yml
+          else
+            COMPOSE_FILE=docker/docker-compose.yml
+          fi
           # Sometimes `docker compose down` fail due to hang container, heavy load etc. Need to remove such containers to release resources(for example, listen ports).
-          sudo docker compose -f docker/docker-compose.yml -p ${COMPOSE_PROJECT_NAME} down -v || true
+          sudo docker compose -f "${COMPOSE_FILE}" -p ${COMPOSE_PROJECT_NAME} down -v || true
           sudo docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" -q | xargs -r sudo docker rm -f
           if [[ -n ${RAGFLOW_IMAGE} ]]; then
             sudo docker rmi -f ${RAGFLOW_IMAGE}
