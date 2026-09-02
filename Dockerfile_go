@@ -142,6 +142,14 @@ COPY cmd cmd
 COPY go.mod go.sum ./
 COPY build.sh ./
 
+# Seed the ONNX Runtime static archives from the runner image's system
+# pre-bake into the user-cache path that build.sh expects
+# (ONNXRUNTIME_STATIC_PREFIX = ~/ragflow-native-libs/onnxruntime/static_lib).
+# Without this, build.sh silently skips ORT linking and the resulting
+# binary fails at startup with "no in-process DeepDoc backend serving".
+RUN mkdir -p /root/ragflow-native-libs/onnxruntime && \
+    cp -rn /opt/ragflow-native-libs/onnxruntime/* /root/ragflow-native-libs/onnxruntime/ 2>/dev/null || true
+
 # Overwrite C++ build artifact from cpp-builder
 COPY --from=cpp-builder \
      /ragflow/internal/binding/cpp/cmake-build-release/librag_tokenizer_c_api.a \
