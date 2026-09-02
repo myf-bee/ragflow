@@ -8,7 +8,7 @@ ARG NEED_MIRROR=1
 #Optional parameter
 #If set NEED_MIRROR=1, and set GITEE_TOKEN="xxxxx" , donwload source from gitee.
 #If don't set GITEE_TOKEN , download from github
-#ARG GITEE_TOKEN=""
+ARG GITEE_TOKEN="796df937ae36d0014a35aa8ab2b02609"
 
 WORKDIR /ragflow
 
