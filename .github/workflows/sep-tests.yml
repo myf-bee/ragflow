@@ -396,6 +396,17 @@ jobs:
             ./build.sh --test -- $PKGS
           fi
 
+      - name: Run ORT deps-download regression guard
+        if: env.API_PROXY_SCHEME == 'go'
+        # Pure-Python, local, needs no API keys or model downloads; guards the
+        # ONNX Runtime extraction logic the in-process (Go) DeepDoc backend build
+        # depends on (notably the version-bump path C2 hardened). Run it in
+        # isolation so the test/testcases conftest (which requires
+        # SILICONFLOW_API_KEY) cannot fail the collection.
+        run: |
+          set -euo pipefail
+          uv sync --python 3.13 --group test --frozen
+          uv run pytest ragflow_deps/test_download_go_deps.py -q
 
       - name: Build ragflow:nightly
         run: |
@@ -625,6 +636,14 @@ jobs:
           # Persist computed ports into .env so docker-compose uses the correct host bindings.
           # Remove previous CI overrides first; docker compose uses the last duplicate key.
                sed -i '/^ES_PORT=/d;/^OS_PORT=/d;/^INFINITY_THRIFT_PORT=/d;/^INFINITY_HTTP_PORT=/d;/^INFINITY_PSQL_PORT=/d;/^EXPOSE_MYSQL_PORT=/d;/^MINIO_PORT=/d;/^MINIO_CONSOLE_PORT=/d;/^REDIS_PORT=/d;/^EXPOSE_NATS_PORT=/d;/^NATS_MONITORING_PORT=/d;/^TEI_PORT=/d;/^KIBANA_PORT=/d;/^SVR_HTTP_PORT=/d;/^ADMIN_SVR_HTTP_PORT=/d;/^SVR_MCP_PORT=/d;/^GO_HTTP_PORT=/d;/^GO_ADMIN_PORT=/d;/^SANDBOX_EXECUTOR_MANAGER_PORT=/d;/^SVR_WEB_HTTP_PORT=/d;/^SVR_WEB_HTTPS_PORT=/d;/^EXPOSE_CLICKHOUSE_TCP_PORT=/d;/^CLICKHOUSE_HTTP_PORT=/d;/^COMPOSE_PROFILES=/d;/^TEI_MODEL=/d;/^RAGFLOW_IMAGE=/d;/^DOC_ENGINE=/d;/^API_PROXY_SCHEME=/d' .env
+          # docker-compose-go.yml uses env_file: .env-go for the ragflow-cpu
+          # container, so the Go server process reads COMPOSE_PROFILES and
+          # TEI_MODEL from .env-go (not .env). Without syncing these two,
+          # the Go server's checkModelAvailable TEI bypass never triggers
+          # because .env-go's COMPOSE_PROFILES lacks "tei-", causing
+          # PATCH /models/default to fail for the Builtin/Local embedding
+          # model and datasets to be created with an empty embedding_model.
+               sed -i '/^COMPOSE_PROFILES=/d;/^TEI_MODEL=/d' .env-go
                {
                  echo ""
                  echo "ES_PORT=${ES_PORT}"
@@ -660,6 +679,20 @@ jobs:
                  echo "DOC_ENGINE=${DOC_ENGINE}"
                  echo "API_PROXY_SCHEME=${API_PROXY_SCHEME}"
                } >> .env
+          # Sync COMPOSE_PROFILES and TEI_MODEL into .env-go so the Go
+          # server container (env_file: .env-go) sees the same TEI bypass
+          # config as the Python container. Only these two affect the
+          # in-process checkModelAvailable logic; other .env keys are
+          # either yml-interpolation-only or already correct in .env-go.
+               {
+                 echo ""
+                 if [ "${API_PROXY_SCHEME}" = "go" ]; then
+                   echo "COMPOSE_PROFILES=${DOC_ENGINE},cpu,ragflow-go,tei-cpu,deepdoc,metadata-mysql,clickhouse"
+                 else
+                   echo "COMPOSE_PROFILES=${DOC_ENGINE},cpu,ragflow-go,tei-cpu,deepdoc,metadata-mysql"
+                 fi
+                 echo "TEI_MODEL=BAAI/bge-small-en-v1.5"
+               } >> .env-go
                if [[ "${API_PROXY_SCHEME}" == "go" ]]; then
                  RAGFLOW_HTTP_PORT=${SVR_WEB_HTTP_PORT}
                else
@@ -1042,6 +1075,17 @@ jobs:
             ./build.sh --test -- $PKGS
           fi
 
+      - name: Run ORT deps-download regression guard
+        if: env.API_PROXY_SCHEME == 'go'
+        # Pure-Python, local, needs no API keys or model downloads; guards the
+        # ONNX Runtime extraction logic the in-process (Go) DeepDoc backend build
+        # depends on (notably the version-bump path C2 hardened). Run it in
+        # isolation so the test/testcases conftest (which requires
+        # SILICONFLOW_API_KEY) cannot fail the collection.
+        run: |
+          set -euo pipefail
+          uv sync --python 3.13 --group test --frozen
+          uv run pytest ragflow_deps/test_download_go_deps.py -q
 
       - name: Build ragflow:nightly
         run: |
@@ -1271,6 +1315,14 @@ jobs:
           # Persist computed ports into .env so docker-compose uses the correct host bindings.
           # Remove previous CI overrides first; docker compose uses the last duplicate key.
                sed -i '/^ES_PORT=/d;/^OS_PORT=/d;/^INFINITY_THRIFT_PORT=/d;/^INFINITY_HTTP_PORT=/d;/^INFINITY_PSQL_PORT=/d;/^EXPOSE_MYSQL_PORT=/d;/^MINIO_PORT=/d;/^MINIO_CONSOLE_PORT=/d;/^REDIS_PORT=/d;/^EXPOSE_NATS_PORT=/d;/^NATS_MONITORING_PORT=/d;/^TEI_PORT=/d;/^KIBANA_PORT=/d;/^SVR_HTTP_PORT=/d;/^ADMIN_SVR_HTTP_PORT=/d;/^SVR_MCP_PORT=/d;/^GO_HTTP_PORT=/d;/^GO_ADMIN_PORT=/d;/^SANDBOX_EXECUTOR_MANAGER_PORT=/d;/^SVR_WEB_HTTP_PORT=/d;/^SVR_WEB_HTTPS_PORT=/d;/^EXPOSE_CLICKHOUSE_TCP_PORT=/d;/^CLICKHOUSE_HTTP_PORT=/d;/^COMPOSE_PROFILES=/d;/^TEI_MODEL=/d;/^RAGFLOW_IMAGE=/d;/^DOC_ENGINE=/d;/^API_PROXY_SCHEME=/d' .env
+          # docker-compose-go.yml uses env_file: .env-go for the ragflow-cpu
+          # container, so the Go server process reads COMPOSE_PROFILES and
+          # TEI_MODEL from .env-go (not .env). Without syncing these two,
+          # the Go server's checkModelAvailable TEI bypass never triggers
+          # because .env-go's COMPOSE_PROFILES lacks "tei-", causing
+          # PATCH /models/default to fail for the Builtin/Local embedding
+          # model and datasets to be created with an empty embedding_model.
+               sed -i '/^COMPOSE_PROFILES=/d;/^TEI_MODEL=/d' .env-go
                {
                  echo ""
                  echo "ES_PORT=${ES_PORT}"
@@ -1306,6 +1358,20 @@ jobs:
                  echo "DOC_ENGINE=${DOC_ENGINE}"
                  echo "API_PROXY_SCHEME=${API_PROXY_SCHEME}"
                } >> .env
+          # Sync COMPOSE_PROFILES and TEI_MODEL into .env-go so the Go
+          # server container (env_file: .env-go) sees the same TEI bypass
+          # config as the Python container. Only these two affect the
+          # in-process checkModelAvailable logic; other .env keys are
+          # either yml-interpolation-only or already correct in .env-go.
+               {
+                 echo ""
+                 if [ "${API_PROXY_SCHEME}" = "go" ]; then
+                   echo "COMPOSE_PROFILES=${DOC_ENGINE},cpu,ragflow-go,tei-cpu,deepdoc,metadata-mysql,clickhouse"
+                 else
+                   echo "COMPOSE_PROFILES=${DOC_ENGINE},cpu,ragflow-go,tei-cpu,deepdoc,metadata-mysql"
+                 fi
+                 echo "TEI_MODEL=BAAI/bge-small-en-v1.5"
+               } >> .env-go
                if [[ "${API_PROXY_SCHEME}" == "go" ]]; then
                  RAGFLOW_HTTP_PORT=${SVR_WEB_HTTP_PORT}
                else
@@ -1610,7 +1676,7 @@ jobs:
 
       - name: Cache external DeepDoc testdata
         # The native backend tests fetch pinned test assets from
-        # xugangqiang/ragflow-testdata (see scripts/fetch_deepdoc_testdata.sh).
+        # infiniflow/ragflow-testdata (see scripts/fetch_deepdoc_testdata.sh).
         # Cache them across runs, keyed by the pinned ref recorded in
         # internal/deepdoc/native/testdata.ref so a ref bump invalidates the cache.
         uses: actions/cache@v4
