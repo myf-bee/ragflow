@@ -132,15 +132,37 @@ COPY cmd cmd
 COPY go.mod go.sum ./
 COPY build.sh ./
 
-# Seed the ONNX Runtime static archives from the runner image's system
-# pre-bake into the user-cache path that build.sh expects
-# (ONNXRUNTIME_STATIC_PREFIX = ~/ragflow-native-libs/onnxruntime/static_lib).
-# Without this, build.sh silently skips ORT linking and the resulting
-# binary fails at startup with "no in-process DeepDoc backend serving".
-# Use ${HOME} (not a hard-coded /root) so the cache path matches
-# build.sh's ONNXRUNTIME_STATIC_PREFIX regardless of the image's HOME.
-RUN mkdir -p "${HOME}/ragflow-native-libs/onnxruntime" && \
-    cp -rn /opt/ragflow-native-libs/onnxruntime/* "${HOME}/ragflow-native-libs/onnxruntime/" 2>/dev/null || true
+# Download and extract ONNX Runtime static archives into the user-cache path
+# that build.sh expects (ONNXRUNTIME_STATIC_PREFIX =
+# ~/ragflow-native-libs/onnxruntime/static_lib).
+#
+# The github_action_runner base image does NOT ship native libs at
+# /opt/ragflow-native-libs, so build.sh's _seed_from_system finds nothing
+# and silently skips ORT linking — the resulting binary then fails at
+# startup with "no in-process DeepDoc backend serving" because
+# dlopen(NULL)/dlsym can't find OrtGetApiBase.
+#
+# We download ONLY the ORT static zip (not the full download_deps.py, which
+# also pulls chrome/tika/nltk/huggingface models that the Go build doesn't
+# need). These .a files are consumed at link time only; they do NOT enter
+# the final production image (only COPY --from=go-builder /ragflow/bin does).
+#
+# ORT_VERSION must match internal/common.DeepDocORTVersion and
+# ragflow_deps/download_deps.py ORT_VERSION.
+ARG ORT_VERSION=1.23.2
+RUN set -eux; \
+    mkdir -p "${HOME}/ragflow-native-libs/onnxruntime/static_lib"; \
+    ort_dir="${HOME}/ragflow-native-libs/onnxruntime/static_lib/onnxruntime-linux-x64-static_lib-${ORT_VERSION}-glibc2_28"; \
+    if [ -d "$ort_dir" ] && find "$ort_dir" -name '*.a' | grep -q .; then \
+        echo "ORT static libs already present"; \
+    else \
+        zip_url="https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-static_lib-${ORT_VERSION}-glibc2_28.zip"; \
+        tmp_zip="$(mktemp).zip"; \
+        curl -fsSL -o "$tmp_zip" "$zip_url"; \
+        unzip -o "$tmp_zip" -d "${HOME}/ragflow-native-libs/onnxruntime/static_lib"; \
+        rm -f "$tmp_zip"; \
+    fi; \
+    find "${HOME}/ragflow-native-libs/onnxruntime/static_lib" -name '*.a' | head -5
 
 # Overwrite C++ build artifact from cpp-builder
 COPY --from=cpp-builder \
