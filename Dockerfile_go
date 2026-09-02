@@ -156,6 +156,8 @@ RUN set -eux; \
     if [ -d "$ort_dir" ] && find "$ort_dir" -name '*.a' | grep -q .; then \
         echo "ORT static libs already present"; \
     else \
+        apt-get update && apt-get install -y --no-install-recommends unzip && \
+        rm -rf /var/lib/apt/lists/*; \
         zip_url="https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-static_lib-${ORT_VERSION}-glibc2_28.zip"; \
         tmp_zip="$(mktemp).zip"; \
         curl -fsSL -o "$tmp_zip" "$zip_url"; \
