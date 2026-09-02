@@ -147,8 +147,10 @@ COPY build.sh ./
 # (ONNXRUNTIME_STATIC_PREFIX = ~/ragflow-native-libs/onnxruntime/static_lib).
 # Without this, build.sh silently skips ORT linking and the resulting
 # binary fails at startup with "no in-process DeepDoc backend serving".
-RUN mkdir -p /root/ragflow-native-libs/onnxruntime && \
-    cp -rn /opt/ragflow-native-libs/onnxruntime/* /root/ragflow-native-libs/onnxruntime/ 2>/dev/null || true
+# Use ${HOME} (not a hard-coded /root) so the cache path matches
+# build.sh's ONNXRUNTIME_STATIC_PREFIX regardless of the image's HOME.
+RUN mkdir -p "${HOME}/ragflow-native-libs/onnxruntime" && \
+    cp -rn /opt/ragflow-native-libs/onnxruntime/* "${HOME}/ragflow-native-libs/onnxruntime/" 2>/dev/null || true
 
 # Overwrite C++ build artifact from cpp-builder
 COPY --from=cpp-builder \
