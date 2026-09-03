@@ -414,10 +414,10 @@ jobs:
           RUNNER_WORKSPACE_PREFIX=${RUNNER_WORKSPACE_PREFIX:-${HOME}}
           BUILD_LOCK_FILE=${RUNNER_WORKSPACE_PREFIX}/artifacts/${GITHUB_REPOSITORY}/docker-build.lock
           mkdir -p "$(dirname "${BUILD_LOCK_FILE}")"
-          # Pass the Gitee personal access token to the Docker build as a BuildKit secret
-          # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
-          GITEE_TOKEN_FILE="$(mktemp)"
-          printf '%s' "${GITEE_TOKEN}" > "${GITEE_TOKEN_FILE}"
+          # Pass the Gitee personal access token to the Docker build via --build-arg GITEE_TOKEN.
+          # Dockerfile_go / Dockerfile_ci read it from ARG GITEE_TOKEN (NOT a BuildKit secret),
+          # so the runner must expose GITEE_TOKEN as an environment variable (e.g. via the
+          # runner's docker-compose `environment:` mapping sourced from its .env file).
           # Pick the Dockerfile matching the API proxy scheme:
           #   - go  -> Dockerfile_go  (Go-native image)
           #   - *   -> Dockerfile_ci  (Python/legacy image)
@@ -430,9 +430,8 @@ jobs:
             flock -w 10800 9 || { echo "Timed out waiting for the shared Docker build slot" >&2; exit 1; }
             echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME} (dockerfile=${DOCKERFILE})"
             ##sudo docker pull ubuntu:24.04
-            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f "${DOCKERFILE}" -t ${RAGFLOW_IMAGE} .
+            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --build-arg GITEE_TOKEN=${GITEE_TOKEN} -f "${DOCKERFILE}" -t ${RAGFLOW_IMAGE} .
           ) 9>"${BUILD_LOCK_FILE}"
-          rm -f "${GITEE_TOKEN_FILE}"
 
       - name: Prepare Python test environment
         if: env.API_PROXY_SCHEME != 'web'
@@ -1093,10 +1092,10 @@ jobs:
           RUNNER_WORKSPACE_PREFIX=${RUNNER_WORKSPACE_PREFIX:-${HOME}}
           BUILD_LOCK_FILE=${RUNNER_WORKSPACE_PREFIX}/artifacts/${GITHUB_REPOSITORY}/docker-build.lock
           mkdir -p "$(dirname "${BUILD_LOCK_FILE}")"
-          # Pass the Gitee personal access token to the Docker build as a BuildKit secret
-          # (mounted inside the builder at /run/secrets/gitee_token, never persisted in any layer).
-          GITEE_TOKEN_FILE="$(mktemp)"
-          printf '%s' "${GITEE_TOKEN}" > "${GITEE_TOKEN_FILE}"
+          # Pass the Gitee personal access token to the Docker build via --build-arg GITEE_TOKEN.
+          # Dockerfile_go / Dockerfile_ci read it from ARG GITEE_TOKEN (NOT a BuildKit secret),
+          # so the runner must expose GITEE_TOKEN as an environment variable (e.g. via the
+          # runner's docker-compose `environment:` mapping sourced from its .env file).
           # Pick the Dockerfile matching the API proxy scheme:
           #   - go  -> Dockerfile_go  (Go-native image)
           #   - *   -> Dockerfile_ci  (Python/legacy image)
@@ -1109,9 +1108,8 @@ jobs:
             flock -w 10800 9 || { echo "Timed out waiting for the shared Docker build slot" >&2; exit 1; }
             echo "Acquired Docker build slot for ${DOC_ENGINE}/${API_PROXY_SCHEME} (dockerfile=${DOCKERFILE})"
             ##sudo docker pull ubuntu:24.04
-            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --secret id=gitee_token,src=${GITEE_TOKEN_FILE} -f "${DOCKERFILE}" -t ${RAGFLOW_IMAGE} .
+            sudo DOCKER_BUILDKIT=1 docker build --build-arg NEED_MIRROR=1 --build-arg HTTPS_PROXY=${HTTPS_PROXY} --build-arg HTTP_PROXY=${HTTP_PROXY} --build-arg GITEE_TOKEN=${GITEE_TOKEN} -f "${DOCKERFILE}" -t ${RAGFLOW_IMAGE} .
           ) 9>"${BUILD_LOCK_FILE}"
-          rm -f "${GITEE_TOKEN_FILE}"
 
       - name: Prepare Python test environment
         if: env.API_PROXY_SCHEME != 'web'
