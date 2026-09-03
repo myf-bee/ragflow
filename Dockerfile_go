@@ -112,25 +112,6 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
 # exclusively in the `web-builder` stage and never reaches the final image.
 
 
-
-# ── cpp-builder stage ──────────────────────────────────────────────
-# Compile C++ static library (librag_tokenizer_c_api.a) using the
-# infinity_builder image which ships clang-20, cmake and other C++
-# tooling.  This stage is independent from the base image so that the
-# heavy C++ build toolchain does not bloat the final production image.
-FROM infiniflow/infinity_builder:ubuntu22_clang20 AS cpp-builder
-USER root
-SHELL ["/bin/bash", "-c"]
-
-ARG NEED_MIRROR=1
-WORKDIR /ragflow
-
-COPY internal/binding/cpp internal/binding/cpp
-COPY build.sh ./
-
-RUN git config --global safe.directory "*" && \
-    cd /ragflow && ./build.sh --cpp
-
 # ── go-builder stage ──
 FROM infiniflow/github_action_runner:latest AS go-builder
 USER root
@@ -175,9 +156,12 @@ RUN set -eux; \
     find "${HOME}/ragflow-native-libs/onnxruntime/static_lib" -name '*.a' | head -5
 
 # Overwrite C++ build artifact from cpp-builder
-COPY --from=cpp-builder \
-     /ragflow/internal/binding/cpp/cmake-build-release/librag_tokenizer_c_api.a \
-     /ragflow/internal/binding/cpp/cmake-build-release/librag_tokenizer_c_api.a
+#COPY --from=cpp-builder \
+#     /ragflow/internal/binding/cpp/cmake-build-release/librag_tokenizer_c_api.a \
+#     /ragflow/internal/binding/cpp/cmake-build-release/librag_tokenizer_c_api.a
+
+RUN git config --global safe.directory "*" && \
+    cd /ragflow && ./build.sh --cpp
 
 RUN git config --global safe.directory "*" && \
     ./build.sh --go
