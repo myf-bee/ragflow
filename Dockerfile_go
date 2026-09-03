@@ -8,7 +8,7 @@ ARG NEED_MIRROR=1
 #Optional parameter
 #If set NEED_MIRROR=1, and set GITEE_TOKEN="xxxxx" , donwload source from gitee.
 #If don't set GITEE_TOKEN , download from github
-ARG GITEE_TOKEN="796df937ae36d0014a35aa8ab2b02609"
+ARG GITEE_TOKEN
 
 WORKDIR /ragflow
 
@@ -59,9 +59,9 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     #libglib2.0-0 libglx-mesa0 libgl1 pkg-config libgdiplus default-jdk libatk-bridge2.0-0 \
     #libgtk-4-1 libnss3 xdg-utils libjemalloc-dev gnupg unzip curl wget git vim less \
     #ghostscript pandoc texlive texlive-latex-extra texlive-xetex texlive-lang-chinese \
-    #fonts-freefont-ttf fonts-noto-cjk postgresql-client
+    #fonts-freefont-ttf fonts-noto-cjk postgresql-client libjemalloc2
 
-    apt --no-install-recommends install -y ca-certificates libjemalloc2 curl vim unzip iproute2 && \
+    apt --no-install-recommends install -y ca-certificates curl vim unzip iproute2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Download resource from GitHub to /usr/share/infinity
@@ -180,7 +180,7 @@ COPY --from=cpp-builder \
      /ragflow/internal/binding/cpp/cmake-build-release/librag_tokenizer_c_api.a
 
 RUN git config --global safe.directory "*" && \
-    ./build.sh -s --go
+    ./build.sh --go
 
 
 # ── web-builder stage ──
@@ -228,7 +228,7 @@ USER root
 WORKDIR /ragflow
 
 # Copy the compiled Go backend binaries (set exec bits at copy time to avoid a redundant chmod layer)
-COPY --from=go-builder --chmod=755 /ragflow/bin/ /ragflow/bin/
+COPY --from=go-builder --chmod=755 /ragflow/bin/ragflow_server /ragflow/bin/ragflow_server
 
 ENV PYTHONPATH=/ragflow/
 
@@ -241,8 +241,6 @@ RUN mkdir -p /etc/nginx/conf.d /var/log/nginx
 
 COPY docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
 COPY docker/nginx/ragflow.conf.golang \
-#     docker/nginx/ragflow.conf.python \
-      docker/nginx/ragflow.conf.hybrid \
      /etc/nginx/conf.d/
 
 RUN rm -f /etc/nginx/sites-enabled/default
