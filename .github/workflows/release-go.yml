@@ -3,12 +3,11 @@ name: release-go
 on:
   schedule:
     - cron: '0 13 * * *'  # This schedule runs every 13:00:00Z(21:00:00+08:00)
-  # https://github.com/orgs/community/discussions/26286?utm_source=chatgpt.com#discussioncomment-3251208
-  # "The create event does not support branch filter and tag filter."
-  # The "create tags" trigger is specifically focused on the creation of new tags, while the "push tags" trigger is activated when tags are pushed, including both new tag creations and updates to existing tags.
+  # Only run when a "v*.*.*" or "nightly" tag is pushed AND that tag lives on the
+  # main-go branch. The branch check is enforced in the prepare job (see the
+  # "Gate tag on main-go" step) because GitHub Actions cannot AND branches+tags
+  # in a single push trigger.
   push:
-    branches:
-      - 'main-go'
     tags:
       - "v*.*.*"                  # normal release
       - 'nightly'                 # mutable tag
@@ -30,6 +29,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       prerelease: ${{ steps.release.outputs.prerelease }}
+      on_main_go: ${{ steps.gate.outputs.on_main_go }}
 
     steps:
       - name: Ensure workspace ownership
@@ -71,8 +71,37 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> ${GITHUB_OUTPUT}
           echo "prerelease=${PRERELEASE}" >> ${GITHUB_OUTPUT}
 
+      - name: Gate tag on main-go
+        # Enforce the AND condition: a "v*.*.*"/"nightly" tag is only released
+        # when its commit is reachable from the main-go branch. Schedule-triggered
+        # nightly builds are always allowed; any other event (e.g. a plain branch
+        # push) is rejected so it never reaches the release pipeline.
+        id: gate
+        run: |
+          set -euo pipefail
+          if [[ ${GITHUB_EVENT_NAME} == "schedule" ]]; then
+            echo "on_main_go=true" >> "${GITHUB_OUTPUT}"
+            echo "Schedule-triggered nightly build; proceeding."
+            exit 0
+          fi
+          if [[ ${GITHUB_REF} != refs/tags/* ]]; then
+            # Not a tag push (e.g. a branch push): do not release.
+            echo "on_main_go=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::Event ${GITHUB_EVENT_NAME} on ${GITHUB_REF} is not a release tag; skipping."
+            exit 0
+          fi
+          git fetch origin main-go --depth 1
+          if git merge-base --is-ancestor origin/main-go "${GITHUB_SHA}"; then
+            echo "on_main_go=true" >> "${GITHUB_OUTPUT}"
+            echo "Tag ${GITHUB_REF} is on main-go; proceeding with release."
+          else
+            echo "on_main_go=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::Tag ${GITHUB_REF} is not on the main-go branch; release will be skipped."
+          fi
+
       - name: Move the existing mutable tag
         # https://github.com/softprops/action-gh-release/issues/171
+        if: steps.gate.outputs.on_main_go == 'true'
         run: |
           git fetch --tags
           if [[ ${GITHUB_EVENT_NAME} == "schedule" ]]; then
@@ -89,6 +118,7 @@ jobs:
 
   build_cli:
     needs: prepare
+    if: needs.prepare.outputs.on_main_go == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -205,6 +235,7 @@ jobs:
     needs:
       - prepare
       - build_cli
+    if: needs.prepare.outputs.on_main_go == 'true'
     runs-on: [ "self-hosted", "ragflow-release" ]
 
     steps:
@@ -258,6 +289,7 @@ jobs:
     needs:
       - prepare
       - publish_cli_assets
+    if: needs.prepare.outputs.on_main_go == 'true'
     runs-on: [ "self-hosted", "ragflow-release" ]
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
