@@ -328,13 +328,8 @@ jobs:
           #sudo docker push infiniflow/ragflow:latest-go
 
       - name: Build and push ragflow-sdk
-        # The SDK is published from the main-python branch; only check out the
-        # sdk/python subtree so the rest of the working tree (e.g. admin/client)
-        # stays on the release branch.
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          git fetch origin main-python
-          git checkout origin/main-python -- sdk/python
           cd sdk/python && uv build && uv publish --token ${{ secrets.PYPI_API_TOKEN }}
 
       #- name: Build and push ragflow-cli
