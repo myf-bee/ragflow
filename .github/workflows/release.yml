@@ -28,6 +28,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       prerelease: ${{ steps.release.outputs.prerelease }}
+      on_main_python: ${{ steps.gate.outputs.on_main_python }}
 
     steps:
       - name: Ensure workspace ownership
@@ -69,8 +70,36 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> ${GITHUB_OUTPUT}
           echo "prerelease=${PRERELEASE}" >> ${GITHUB_OUTPUT}
 
+      - name: Gate on main-python
+        # Enforce the branch gate: a "v*.*.*"/"nightly" tag is only released when
+        # its commit is reachable from the main-python branch. Schedule-triggered
+        # nightly builds are always allowed; any other event is rejected.
+        id: gate
+        run: |
+          set -euo pipefail
+          if [[ ${GITHUB_EVENT_NAME} == "schedule" ]]; then
+            echo "on_main_python=true" >> "${GITHUB_OUTPUT}"
+            echo "Schedule-triggered nightly build; proceeding."
+            exit 0
+          fi
+          if [[ ${GITHUB_REF} != refs/tags/* ]]; then
+            # Not a tag push (e.g. a branch push): do not release.
+            echo "on_main_python=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::Event ${GITHUB_EVENT_NAME} on ${GITHUB_REF} is not a release tag; skipping."
+            exit 0
+          fi
+          git fetch origin main-python --depth 1
+          if git merge-base --is-ancestor origin/main-python "${GITHUB_SHA}"; then
+            echo "on_main_python=true" >> "${GITHUB_OUTPUT}"
+            echo "Tag ${GITHUB_REF} is on main-python; proceeding with release."
+          else
+            echo "on_main_python=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::Tag ${GITHUB_REF} is not on the main-python branch; release will be skipped."
+          fi
+
       - name: Move the existing mutable tag
         # https://github.com/softprops/action-gh-release/issues/171
+        if: steps.gate.outputs.on_main_python == 'true'
         run: |
           git fetch --tags
           if [[ ${GITHUB_EVENT_NAME} == "schedule" ]]; then
@@ -87,6 +116,7 @@ jobs:
 
   build_cli:
     needs: prepare
+    if: needs.prepare.outputs.on_main_python == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -203,6 +233,7 @@ jobs:
     needs:
       - prepare
       - build_cli
+    if: needs.prepare.outputs.on_main_python == 'true'
     runs-on: [ "self-hosted", "ragflow-release" ]
 
     steps:
@@ -256,6 +287,7 @@ jobs:
     needs:
       - prepare
       - publish_cli_assets
+    if: needs.prepare.outputs.on_main_python == 'true'
     runs-on: [ "self-hosted", "ragflow-release" ]
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
