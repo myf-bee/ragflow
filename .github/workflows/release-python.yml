@@ -85,7 +85,7 @@ jobs:
             fi
           fi
 
-  release:
+  release-python:
     needs:
       - prepare
     runs-on: ubuntu-24.04
@@ -104,13 +104,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Build and push image
-        run: |
-          sudo docker login --username myfbee --password-stdin <<< ${{ secrets.DOCKERHUB_TOKEN }}
-          sudo docker build -t myfbee/ragflow:${RELEASE_TAG} -f Dockerfile .
-          #sudo docker tag myfbee/ragflow:${RELEASE_TAG} myfbee/ragflow:latest
-          sudo docker push myfbee/ragflow:${RELEASE_TAG}
-          #sudo docker push myfbee/ragflow:latest
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      #- name: Build and push image
+      #  run: |
+      #    sudo docker login --username myfbee --password-stdin <<< ${{ secrets.DOCKERHUB_TOKEN }}
+      #    sudo docker build -t myfbee/ragflow:${RELEASE_TAG} -f Dockerfile .
+      #    #sudo docker tag myfbee/ragflow:${RELEASE_TAG} myfbee/ragflow:latest
+      #    sudo docker push myfbee/ragflow:${RELEASE_TAG}
+      #    #sudo docker push myfbee/ragflow:latest
 
       - name: Build and push ragflow-sdk
         if: startsWith(github.ref, 'refs/tags/v')
