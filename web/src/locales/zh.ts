@@ -1799,18 +1799,18 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
       chatModelTip: '所有新创建的知识库都会使用默认的聊天模型。',
       ttsModel: 'TTS',
       ttsModelTip:
-        '默认的tts模型会被用于在对话过程中请求语音生成时使用。如未显示可选模型，请根据 https://ragflow.io/docs/dev/supported_models 确认你的模型供应商是否提供该模型。',
+        '默认的tts模型会被用于在对话过程中请求语音生成时使用。如未显示可选模型，请前往“模型供应商”页面，确认你的模型供应商是否提供该模型。',
       embeddingModel: 'Embedding',
       embeddingModelTip:
-        '所有新创建的知识库使用的默认 Embedding 模型。如未显示可选模型，请检查你是否在使用 RAGFlow slim 版(不含 Embedding 模型)；或根据 https://ragflow.io/docs/dev/supported_models 确认你的模型供应商是否提供该模型。',
+        '所有新创建的知识库使用的默认 Embedding 模型。如未显示可选模型，请检查你是否在使用 RAGFlow slim 版(不含 Embedding 模型)；或前往“模型供应商”页面，确认你的模型供应商是否提供该模型。',
       img2txtModel: 'VLM',
       img2txtModelTip:
-        '所有新创建的知识库都将使用默认的 VLM 模型。 它可以描述图片或视频。如未显示可选模型，请根据 https://ragflow.io/docs/dev/supported_models 确认你的模型供应商是否提供该模型。',
+        '所有新创建的知识库都将使用默认的 VLM 模型。 它可以描述图片或视频。如未显示可选模型，请前往“模型供应商”页面，确认你的模型供应商是否提供该模型。',
       sequence2txtModel: 'ASR',
       sequence2txtModelTip:
-        '所有新创建的知识库都将使用默认的 ASR 模型。 使用此模型将语音翻译为相应的文本。如未显示可选模型，请根据 https://ragflow.io/docs/dev/supported_models 确认你的模型供应商是否提供该模型。',
+        '所有新创建的知识库都将使用默认的 ASR 模型。 使用此模型将语音翻译为相应的文本。如未显示可选模型，请前往“模型供应商”页面，确认你的模型供应商是否提供该模型。',
       rerankModel: 'Rerank',
-      rerankModelTip: `默认的 Rerank 模型。如未显示可选模型，请根据 https://ragflow.io/docs/dev/supported_models 确认你的模型供应商是否提供该模型。`,
+      rerankModelTip: `默认的 Rerank 模型。如未显示可选模型，请前往“模型供应商”页面，确认你的模型供应商是否提供该模型。`,
       workspace: '工作空间',
       upgrade: '升级',
       addLlmTitle: '添加 LLM',
@@ -2350,7 +2350,15 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
         '所有解析后的 sections 会按原始顺序合并为 1 个 chunk。',
       imageOcr: 'OCR',
       imageOcrTip:
-        '从上传的图片中本地提取文字。视觉增强独立于该开关，为图片补充描述。',
+        '使用本地 OCR 或所选 PaddleOCR 模型提取图片文字。视觉增强独立于该开关，为图片补充描述。',
+      imageOcrModel: 'OCR 模型',
+      imageOcrLocal: 'DeepDoc',
+      imageOcrModelTip:
+        '选择 DeepDoc 使用本地 OCR，或选择已添加的 PaddleOCR 或 PaddleOCR.local 模型。关闭 OCR 会保留选择但不执行 OCR；SVG 直接读取文字。',
+      imageOcrModelsError:
+        'OCR 模型加载失败，已保留当前选择。请稍后重试，或选择 DeepDoc 使用本地 OCR。',
+      imageOcrNoModels:
+        '尚未添加 PaddleOCR 模型。可使用本地 DeepDoc OCR，或在模型设置中添加 PaddleOCR 模型。',
       imageTextSourceRequired: '图片需要文本来源，请保留 OCR 或视觉增强。',
       visionEnhancementPromptTip:
         '自定义视觉模型的指令。留空则使用内置提示词。',
@@ -2971,6 +2979,8 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
       systemPrompt: '系统提示词',
       userPrompt: '用户提示词',
       tagFile: '标签文件',
+      tagFileTip:
+        '根据所选标签文件，为每个文本块自动提取最多 N 个相关标签，以提高检索准确性。标签提取可能调用模型并产生额外的 Token 消耗。如果提取失败，原始文本块仍会保留。详情请见 https://ragflow.io/docs/dataset_configuration#content-enhancement-configuration。',
       prompt: '提示词',
       promptMessage: '提示词是必填项',
       promptTip:

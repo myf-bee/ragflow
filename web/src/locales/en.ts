@@ -2178,18 +2178,18 @@ Example: Virtual Hosted Style`,
       chatModelTip: 'The default LLM for each newly created dataset.',
       embeddingModel: 'Embedding',
       embeddingModelTip:
-        'The default embedding model for each newly created dataset. If you cannot find an embedding model from the dropdown, check if you are using RAGFlow slim edition (which does not include embedding models) or check https://ragflow.io/docs/dev/supported_models to see if your model provider supports this model.',
+        'The default embedding model for each newly created dataset. If you cannot find an embedding model from the dropdown, check if you are using RAGFlow slim edition (which does not include embedding models) or check the Model providers page to see if your model provider supports this model.',
       img2txtModel: 'VLM',
       img2txtModelTip:
-        'The default VLM for each newly created dataset. It describes a picture or video. If you cannot find a model from the dropdown, check https://ragflow.io/docs/dev/supported_models to see if your model provider supports this model.',
+        'The default VLM for each newly created dataset. It describes a picture or video. If you cannot find a model from the dropdown, check the Model providers page to see if your model provider supports this model.',
       sequence2txtModel: 'ASR',
       sequence2txtModelTip:
         'The default ASR model for each newly created dataset. Use this model to translate voices to corresponding text.',
       rerankModel: 'Rerank',
-      rerankModelTip: `The default rerank model for reranking chunks. If you cannot find a model from the dropdown, check https://ragflow.io/docs/dev/supported_models to see if your model provider supports this model.`,
+      rerankModelTip: `The default rerank model for reranking chunks. If you cannot find a model from the dropdown, check the Model providers page to see if your model provider supports this model.`,
       ttsModel: 'TTS',
       ttsModelTip:
-        'The default text-to-speech model. If you cannot find a model from the dropdown, check https://ragflow.io/docs/dev/supported_models to see if your model provider supports this model.',
+        'The default text-to-speech model. If you cannot find a model from the dropdown, check the Model providers page to see if your model provider supports this model.',
       workspace: 'workspace',
       upgrade: 'Upgrade',
       addLlmTitle: 'Add LLM',
@@ -2774,7 +2774,15 @@ Best for: Documents with flowing, contextually connected content — such as boo
         'Use a vision model to parse image and table blocks; when off, they are treated as plain text.',
       imageOcr: 'OCR',
       imageOcrTip:
-        'Extract text from uploaded images locally. Vision enhancement adds descriptions independently of this switch.',
+        'Extract text from uploaded images with local OCR or the selected PaddleOCR model. Vision enhancement adds descriptions independently of this switch.',
+      imageOcrModel: 'OCR model',
+      imageOcrLocal: 'DeepDoc',
+      imageOcrModelTip:
+        'Choose DeepDoc for local OCR, or an added PaddleOCR or PaddleOCR.local model. Turning OCR off keeps this choice but skips OCR; SVG text is read directly.',
+      imageOcrModelsError:
+        'Could not load OCR models. Your selection is unchanged. Try again later, or choose DeepDoc for local OCR.',
+      imageOcrNoModels:
+        'No PaddleOCR models added. Use DeepDoc for local OCR, or add a PaddleOCR model in model settings.',
       imageTextSourceRequired:
         'Images need a text source: keep OCR or vision enhancement on.',
       visionEnhancementPromptTip:
@@ -3376,6 +3384,8 @@ This delimiter is used to split the input text into several text pieces echo of 
       systemPrompt: 'System prompt',
       userPrompt: 'User prompt',
       tagFile: 'Tag file',
+      tagFileTip:
+        'Automatically extracts up to N relevant tags for each chunk based on the selected tag file to improve retrieval accuracy. Tag extraction may invoke a model and consume additional tokens. If extraction fails, the original chunk will be preserved. For details, see https://ragflow.io/docs/dataset_configuration#content-enhancement-configuration.',
       addCategory: 'Add category',
       categoryName: 'Category name',
       nextStep: 'Next step',

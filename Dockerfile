@@ -9,7 +9,7 @@ ARG TARGETARCH
 # that matches the target platform, so a single-arch build never requires both
 # runner images to be present.
 FROM infiniflow/github_action_runner:latest      AS runner-amd64
-FROM myfbee/github-runner:arm64 AS runner-arm64
+FROM infiniflow/github_action_runner:latest-arm64 AS runner-arm64
 
 # base stage
 FROM ubuntu:24.04 AS base
@@ -192,17 +192,33 @@ WORKDIR /ragflow
 # runner shares the host Docker daemon, so the mount persists across jobs/replicas).
 ENV GOMODCACHE=/root/.cache/gomod GOCACHE=/root/.cache/gobuild
 
+# GOPROXY is overridable via --build-arg. CI passes a proxy that is reliable
+# from GitHub runners (e.g. proxy.golang.org); the default keeps goproxy.cn
+# first for developers behind the GFW. Both `go mod download` below and the
+# `go build` inside build.sh inherit this ENV.
+ARG GOPROXY
+ENV GOPROXY="${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}"
+
 # Cache Go modules BEFORE copying source (mirrors the Dockerfile_ci fix):
 # copy only the manifests, download the full module graph into a persistent
 # BuildKit cache mount, then bring in source. GOMODCACHE/GOCACHE are pinned to the
 # mounted paths so `go mod download` and `build.sh --go` share the same cache and
 # dependencies are never re-fetched when only source changes.
 COPY go.mod go.sum ./
+# Retry the module download: Go module proxies occasionally drop the HTTP/2
+# connection (GOAWAY) mid-transfer, which is transient and recovers on retry.
+# Exit nonzero if all attempts fail, so the build fails fast instead of
+# continuing with an incomplete module cache (which would surface later in
+# build.sh as a confusing missing-dependency error).
 RUN --mount=type=cache,id=ragflow_gomod,target=/root/.cache/gomod,sharing=locked \
     --mount=type=cache,id=ragflow_gobuild,target=/root/.cache/gobuild \
-    GOMODCACHE=/root/.cache/gomod GOCACHE=/root/.cache/gobuild \
-    GOPROXY=${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct} \
-    go mod download
+    ok=0; \
+    for i in 1 2 3 4 5; do \
+      if go mod download; then ok=1; break; fi; \
+      echo "go mod download attempt $i failed, retrying in 5s" >&2; \
+      [ "$i" -lt 5 ] && sleep 5; \
+    done; \
+    if [ "$ok" -ne 1 ]; then echo "go mod download failed after 5 attempts" >&2; exit 1; fi
 
 COPY internal internal
 COPY cmd cmd

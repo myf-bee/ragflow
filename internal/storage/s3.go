@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	s3Config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -83,16 +84,16 @@ func (s *S3Storage) connect(ctx context.Context) error {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Create S3 client with custom endpoint if provided
-	var clientOpts []func(*s3.Options)
-	if s.config.EndpointURL != "" {
-		clientOpts = append(clientOpts, func(o *s3.Options) {
+	s.client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if s.config.EndpointURL != "" {
 			o.BaseEndpoint = aws.String(s.config.EndpointURL)
-			o.UsePathStyle = s.config.AddressingStyle == "path"
-		})
-	}
-
-	s.client = s3.NewFromConfig(cfg, clientOpts...)
+		}
+		o.UsePathStyle = s.config.AddressingStyle == "path"
+		if s.config.SignatureVersion == "s3" {
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+			o.APIOptions = append(o.APIOptions, v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware)
+		}
+	})
 	return nil
 }
 
@@ -225,11 +226,21 @@ func (s *S3Storage) Get(ctx context.Context, bucket, fnm string, tenantID ...str
 	bucket, fnm = s.resolveBucketAndPath(bucket, fnm)
 
 	for i := 0; i < 2; i++ {
+		// Honor cancellation up front so an already-canceled context returns
+		// promptly instead of running the reconnect/backoff loop.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(fnm),
 		})
 		if err != nil {
+			// The request may have failed because ctx was canceled mid-flight;
+			// surface that instead of sleeping and retrying with a dead context.
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
 			common.Error("Failed to get object", err, zap.String("bucket", bucket), zap.String("key", fnm), zap.Error(err))
 			s.reconnect(ctx)
 			time.Sleep(time.Second)
@@ -243,6 +254,9 @@ func (s *S3Storage) Get(ctx context.Context, bucket, fnm string, tenantID ...str
 			return err
 		}()
 		if readErr != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
 			common.Error("Failed to read object data", readErr, zap.String("bucket", bucket), zap.String("key", fnm), zap.Error(readErr))
 			s.reconnect(ctx)
 			time.Sleep(time.Second)

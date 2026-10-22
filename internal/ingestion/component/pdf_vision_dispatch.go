@@ -246,11 +246,11 @@ func dispatchMonkeyOCRv2PDF(ctx context.Context, db *gorm.DB, filename string, b
 	return buildMarkdownOCRDispatchResult(md), nil
 }
 
-func parseMarkdownToJSONItems(ctx context.Context, filename, mdText string) []map[string]any {
+func parseMarkdownToJSONItems(ctx context.Context, filename, mdText string) []parser.DocItem {
 	mp, err := parser.NewMarkdownParser(parser.GoMarkdown)
 	if err != nil {
 		warnParserNormalizationFallback(filename, "markdown", err)
-		return []map[string]any{parser.NewTextJSONItem(mdText)}
+		return []parser.DocItem{parser.NewTextJSONItem(mdText)}
 	}
 	// OCR Markdown is an untrusted backend response. Keep normalization
 	// deterministic and local: embedded data URIs remain available, while
@@ -259,11 +259,11 @@ func parseMarkdownToJSONItems(ctx context.Context, filename, mdText string) []ma
 	res := mp.ParseWithResult(ctx, filename, []byte(mdText))
 	if res.Err != nil {
 		warnParserNormalizationFallback(filename, "markdown", res.Err)
-		return []map[string]any{parser.NewTextJSONItem(mdText)}
+		return []parser.DocItem{parser.NewTextJSONItem(mdText)}
 	}
 	if len(res.JSON) == 0 {
 		warnParserNormalizationFallback(filename, "markdown", fmt.Errorf("parser returned no JSON items"))
-		return []map[string]any{parser.NewTextJSONItem(mdText)}
+		return []parser.DocItem{parser.NewTextJSONItem(mdText)}
 	}
 	return res.JSON
 }
@@ -283,8 +283,8 @@ func defaultIsMonkeyOCRv2LayoutModelID(ctx context.Context, db *gorm.DB, tenantI
 	if db == nil || strings.TrimSpace(modelID) == "" {
 		return false
 	}
-	driver, _, _, _, err := resolveModelConfigByID(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
-	return err == nil && strings.EqualFold(driver.Name(), "monkeyocrv2")
+	resolved, err := resolveModelConfigByID(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
+	return err == nil && strings.EqualFold(resolved.driver.Name(), "monkeyocrv2")
 }
 
 func monkeyOCRv2ParseRequest(ctx context.Context, apiURL, filename string, binary []byte, timeout time.Duration) ([]byte, error) {
@@ -582,8 +582,11 @@ var resolveMinerUModelForDispatch = defaultResolveMinerUModelForDispatch
 func defaultResolveMinerUModelForDispatch(ctx context.Context, db *gorm.DB, tenantID, modelID string) (modelModule.ModelDriver, string, *modelModule.APIConfig, error) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID != "" && !strings.Contains(modelID, "@") {
-		driver, modelName, apiConfig, _, err := resolveModelConfigByID(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
-		return driver, modelName, apiConfig, err
+		resolved, err := resolveModelConfigByID(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return resolved.driver, resolved.model.ModelName, resolved.apiConfig, nil
 	}
 	if modelID != "" {
 		driver, modelName, apiConfig, _, err := resolveModelConfig(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
@@ -612,8 +615,11 @@ var resolvePaddleOCRModelForDispatch = defaultResolvePaddleOCRModelForDispatch
 
 func defaultResolvePaddleOCRModelForDispatch(ctx context.Context, db *gorm.DB, tenantID, modelID string) (modelModule.ModelDriver, string, *modelModule.APIConfig, error) {
 	if strings.TrimSpace(modelID) != "" && !strings.Contains(modelID, "@") {
-		driver, modelName, apiConfig, _, err := resolveModelConfigByID(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
-		return driver, modelName, apiConfig, err
+		resolved, err := resolveModelConfigByID(ctx, db, tenantID, entity.ModelTypeOCR, modelID)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return resolved.driver, resolved.model.ModelName, resolved.apiConfig, nil
 	}
 	driver, modelName, apiConfig, _, err := resolveTenantOCRModelByProvider(ctx, db, tenantID, "PaddleOCR")
 	return driver, modelName, apiConfig, err
@@ -1050,7 +1056,7 @@ func mineruJSONParseResult(filename string, items []map[string]any) parser.Parse
 			"outline":      []map[string]any{},
 			"parse_method": "mineru",
 		},
-		JSON: items,
+		JSON: parser.MapsToItems(items),
 	}
 }
 
@@ -1148,7 +1154,7 @@ func dispatchPDFVision(
 	return parser.ParseResult{
 		OutputFormat: "json",
 		File:         fileMeta,
-		JSON:         items,
+		JSON:         parser.MapsToItems(items),
 	}, nil
 }
 
