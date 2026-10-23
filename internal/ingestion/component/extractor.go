@@ -644,6 +644,8 @@ func extractorChunkList(v any) ([]map[string]any, bool) {
 	switch list := v.(type) {
 	case []map[string]any:
 		return list, true
+	case []schema.ChunkDoc:
+		return schema.ChunkDocsToMaps(list), true
 	case []any:
 		out := make([]map[string]any, 0, len(list))
 		for _, item := range list {
@@ -1651,9 +1653,6 @@ func getExtractorContextLengthOverride() func(ctx context.Context, llmID string)
 func extractorContextLength(ctx context.Context, db *gorm.DB, llmID string) int {
 	if fn := getExtractorContextLengthOverride(); fn != nil {
 		return fn(ctx, llmID)
-	}
-	if db == nil {
-		db = dao.DB
 	}
 	state, err := runtime.GetStateFromContext(ctx)
 	if err != nil || state == nil {

@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !enterprise
-
 package permission
 
 import (
@@ -45,6 +43,9 @@ type evaluation struct {
 }
 
 func newPolicy(source Source) policy {
+	if activePolicy, handled := newPolicyEE(source); handled {
+		return activePolicy
+	}
 	return &communityPolicy{source: source}
 }
 
@@ -183,6 +184,12 @@ func (p *communityPolicy) QueryScope(ctx context.Context, subject Subject, query
 	}
 	if err := source.validateDatasetTenants(ctx, subject.UserID); err != nil {
 		return QueryScope{}, true, err
+	}
+	// Enterprise tenant roles are stored as numeric IDs. The generic SQL fast
+	// path cannot resolve those IDs safely, so let the normal resource checks
+	// evaluate candidate IDs through databaseSource.GetMembership instead.
+	if tenantRoleMembershipEnabled(source.db) {
+		return QueryScope{}, false, nil
 	}
 
 	return QueryScope{apply: func(query *gorm.DB) *gorm.DB {
@@ -469,7 +476,7 @@ func (e *evaluation) getMembership(ctx context.Context, userID, tenantID string)
 	membership, err := e.source.GetMembership(ctx, userID, tenantID)
 	if err != nil {
 		err = fmt.Errorf("permission: load tenant membership: %w", err)
-	} else if membership == nil || !membership.Active || membership.UserID != userID || membership.TenantID != tenantID || membership.Role == RoleInvite {
+	} else if membership == nil || !membership.Active || membership.UserID != userID || membership.TenantID != tenantID {
 		membership = nil
 		err = ErrMembershipNotFound
 	}
@@ -520,7 +527,7 @@ func validTenantRequirement(requirement TenantRequirement) bool {
 }
 
 func membershipSatisfies(membership *Membership, requirement TenantRequirement) bool {
-	if membership == nil || !membership.Active || membership.Role == RoleInvite {
+	if membership == nil || !membership.Active {
 		return false
 	}
 	switch requirement {
@@ -551,11 +558,26 @@ func resourceAccess(resource Resource, source AccessSource) Access {
 }
 
 func resourceAccessWithOperations(resource Resource, source AccessSource, operations []Operation) Access {
+	permissionMask := int32(0)
+	for _, operation := range operations {
+		switch operation {
+		case OperationRead, OperationRun, OperationUse:
+			permissionMask |= ResourcePermissionRead
+		case OperationCreate, OperationUpdate, OperationDeleteContent:
+			permissionMask |= ResourcePermissionWrite
+		case OperationDelete, OperationShare:
+			permissionMask |= ResourcePermissionManage
+		}
+	}
+	if source == AccessSourceOwner {
+		permissionMask = ResourcePermissionOwner
+	}
 	return Access{
-		Resource:   resource.Ref,
-		TenantID:   resource.TenantID,
-		Source:     source,
-		Operations: append([]Operation(nil), operations...),
+		Resource:       resource.Ref,
+		TenantID:       resource.TenantID,
+		Source:         source,
+		PermissionMask: permissionMask,
+		Operations:     append([]Operation(nil), operations...),
 	}
 }
 
