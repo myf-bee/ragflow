@@ -122,6 +122,6 @@ jobs:
           gh api repos/${{ github.repository }}/releases \
             -f tag_name="${RELEASE_TAG}" \
             -f name="${RELEASE_TAG}" \
-            -F make_latest=false \
+            -f make_latest=false \
             -F generate_release_notes=true \
             $([ "${PRERELEASE}" = "true" ] && echo "-F prerelease=true")
