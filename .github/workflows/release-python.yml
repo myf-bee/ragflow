@@ -75,9 +75,9 @@ jobs:
       - name: Build and push image
         run: |
           sudo docker login --username myfbee --password-stdin <<< ${{ secrets.DOCKERHUB_TOKEN }}
-          #sudo docker build -t infiniflow/ragflow:${RELEASE_TAG} -f Dockerfile .
+          sudo docker build -t myfbee/ragflow:${RELEASE_TAG} -f Dockerfile .
           # sudo docker tag infiniflow/ragflow:${RELEASE_TAG} infiniflow/ragflow:latest
-          #sudo docker push infiniflow/ragflow:${RELEASE_TAG}
+          sudo docker push myfbee/ragflow:${RELEASE_TAG}
           # sudo docker push infiniflow/ragflow:latest
 
       - name: Build and push ragflow-sdk
